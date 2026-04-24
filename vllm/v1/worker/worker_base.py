@@ -121,6 +121,14 @@ class WorkerBase:
         """Apply a function on the model inside this worker."""
         return fn(self.get_model())
 
+    def get_pecs_stats(self) -> dict[int, dict[str, object]]:
+        """Return PECS stats exposed by the loaded model, if available."""
+        model = self.get_model()
+        get_pecs_stats = getattr(model, "get_pecs_stats", None)
+        if callable(get_pecs_stats):
+            return get_pecs_stats()
+        return {}
+
     def get_model_inspection(self) -> str:
         """Return a transformers-style hierarchical view of the model."""
         from vllm.model_inspection import format_model_inspection

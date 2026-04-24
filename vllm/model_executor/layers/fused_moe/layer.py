@@ -32,6 +32,7 @@ from vllm.model_executor.layers.fused_moe.fused_moe_method_base import (
 from vllm.model_executor.layers.fused_moe.fused_moe_modular_method import (
     FusedMoEModularMethod,
 )
+from vllm.model_executor.layers.fused_moe.pecs import PecsLayerRuntime
 from vllm.model_executor.layers.fused_moe.rocm_aiter_fused_moe import (
     init_aiter_topK_meta_data,
 )
@@ -414,6 +415,14 @@ class FusedMoE(PluggableLayer):
             )
 
         self.top_k = top_k
+        self.pecs = PecsLayerRuntime(
+            enabled=vllm_config.parallel_config.enable_pecs,
+            layer_name=self.layer_name,
+            top_k=top_k,
+            confirmed_capacity=vllm_config.parallel_config.pecs_confirmed_capacity,
+            predictor_path=vllm_config.parallel_config.pecs_predictor_path,
+            predictor_dtype=vllm_config.parallel_config.pecs_predictor_dtype,
+        )
 
         self._init_aiter_shared_experts_topK_buffer(
             vllm_config=vllm_config, dp_size=dp_size_
@@ -466,6 +475,7 @@ class FusedMoE(PluggableLayer):
             zero_expert_type=zero_expert_type,
             num_logical_experts=self.logical_num_experts,
         )
+        self.router.set_capture_fn(self._capture_pecs_logical_ids)
         self.routing_method_type: RoutingMethodType = self.router.routing_method_type
 
         self.moe_config: FusedMoEConfig = FusedMoEConfig(
@@ -1500,6 +1510,7 @@ class FusedMoE(PluggableLayer):
         self.eplb_state.expert_load_view = expert_load_view[moe_layer_idx]
         self.eplb_state.logical_to_physical_map = logical_to_physical_map[moe_layer_idx]
         self.eplb_state.logical_replica_count = logical_replica_count[moe_layer_idx]
+        self.pecs.on_eplb_map_update(self.eplb_state.logical_to_physical_map)
 
     def ensure_moe_quant_config_init(self):
         if self.quant_method.moe_quant_config is None:
@@ -1540,10 +1551,17 @@ class FusedMoE(PluggableLayer):
         hidden_states: torch.Tensor,
         router_logits: torch.Tensor,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
+        self.pecs.pre_route(hidden_states)
         return self.runner.forward(
             hidden_states,
             router_logits,
         )
+
+    def _capture_pecs_logical_ids(self, logical_ids: torch.Tensor) -> None:
+        self.pecs.post_route(logical_ids)
+
+    def get_pecs_stats(self) -> dict[str, object]:
+        return self.pecs.snapshot()
 
     @property
     def expert_map(self) -> torch.Tensor | None:

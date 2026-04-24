@@ -919,6 +919,10 @@ class MixtureOfExperts(Protocol):
         num_local_physical_experts: int,
     ) -> None: ...
 
+    def get_pecs_stats(self) -> dict[int, dict[str, object]]:
+        """Return per-layer PECS runtime stats when available."""
+        return {}
+
 
 def is_mixture_of_experts(model: object) -> TypeIs[MixtureOfExperts]:
     return (

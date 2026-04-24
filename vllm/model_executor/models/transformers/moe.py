@@ -153,6 +153,13 @@ class MoEMixin(MixtureOfExperts):
             mlp.n_redundant_experts = self.num_redundant_experts
             mlp.experts.update_expert_map()
 
+    def get_pecs_stats(self) -> dict[int, dict[str, object]]:
+        return {
+            moe_layer_idx: mlp_layer.experts.get_pecs_stats()
+            for moe_layer_idx, mlp_layer in enumerate(self.mlp_moe_layers)
+            if hasattr(mlp_layer.experts, "get_pecs_stats")
+        }
+
     def get_expert_mapping(self) -> list[tuple[str, str, int, str]]:
         """
         Params for weights, fp8 weight scales, fp8 activation scales

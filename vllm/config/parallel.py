@@ -37,6 +37,7 @@ DataParallelBackend = Literal["ray", "mp"]
 EPLBPolicyOption = Literal["default"]
 DCPCommBackend = Literal["ag_rs", "a2a"]
 EPLBCommunicatorBackend = Literal["torch_nccl", "torch_gloo", "pynccl"]
+PecsPredictorDType = Literal["auto", "float32", "float16", "bfloat16"]
 All2AllBackend = Literal[
     "naive",
     "pplx",
@@ -194,6 +195,15 @@ class ParallelConfig:
     """Enable dual batch overlap for the model executor."""
     ubatch_size: int = 0
     """Number of ubatch size."""
+
+    enable_pecs: bool = False
+    """Enable PECS runtime state in MoE layers."""
+    pecs_predictor_path: str | None = None
+    """Directory containing per-layer PECS predictor checkpoints."""
+    pecs_confirmed_capacity: int = Field(default=2, ge=1)
+    """Capacity of the online confirmed expert cache per MoE layer."""
+    pecs_predictor_dtype: PecsPredictorDType = "auto"
+    """Runtime dtype for frozen PECS predictor weights."""
 
     dbo_decode_token_threshold: int = 32
     """The threshold for dual batch overlap for batches only containing decodes.
@@ -478,6 +488,9 @@ class ParallelConfig:
             raise ValueError(
                 "dcp_comm_backend='a2a' requires decode_context_parallel_size > 1."
             )
+
+        if self.enable_pecs and self.pecs_predictor_path == "":
+            raise ValueError("pecs_predictor_path must be None or a non-empty path.")
 
         return self
 

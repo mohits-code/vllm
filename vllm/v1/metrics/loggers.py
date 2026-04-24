@@ -139,6 +139,35 @@ class LoggingStatLogger(StatLoggerBase):
     def _enable_perf_stats(self) -> bool:
         return self.vllm_config.observability_config.enable_mfu_metrics
 
+    def _get_pecs_log_parts(self) -> tuple[list[str], list[int | float | str]]:
+        pecs_stats = self.last_scheduler_stats.pecs_stats
+        if not pecs_stats:
+            return [], []
+
+        aggregate = pecs_stats.get("aggregate", {})
+        if not aggregate:
+            return [], []
+
+        log_parts = [
+            "PECS confirmed hit: %.1f%%",
+            "PECS proposal hit: %.1f%%",
+            "PECS proposal exact: %.1f%%",
+            "PECS combined hit: %.1f%%",
+            "PECS flushes: %d",
+        ]
+        log_args: list[int | float | str] = [
+            float(aggregate.get("confirmed_hit_rate", 0.0)) * 100,
+            float(aggregate.get("proposal_hit_rate", 0.0)) * 100,
+            float(aggregate.get("proposal_exact_rate", 0.0)) * 100,
+            float(aggregate.get("combined_hit_rate", 0.0)) * 100,
+            int(pecs_stats.get("flushes", 0)),
+        ]
+        predictor_failures = int(pecs_stats.get("predictor_load_failures", 0))
+        if predictor_failures > 0:
+            log_parts.append("PECS predictor load failures: %d")
+            log_args.append(predictor_failures)
+        return log_parts, log_args
+
     def _track_iteration_stats(self, iteration_stats: IterationStats):
         # Save tracked stats for token counters.
         # Use computed tokens for prompt throughput (excludes cached/transferred)
@@ -267,6 +296,9 @@ class LoggingStatLogger(StatLoggerBase):
         if not self.mm_caching_metrics.empty:
             log_parts.append("MM cache hit rate: %.1f%%")
             log_args.append(self.mm_caching_metrics.hit_rate * 100)
+        pecs_log_parts, pecs_log_args = self._get_pecs_log_parts()
+        log_parts.extend(pecs_log_parts)
+        log_args.extend(pecs_log_args)
 
         log_fn(
             self.log_prefix + ", ".join(log_parts),
@@ -333,6 +365,19 @@ class AggregatedLoggingStatLogger(LoggingStatLogger, AggregateStatLoggerBase):
 
     def aggregate_scheduler_stats(self):
         self.last_scheduler_stats = SchedulerStats()
+        pecs_aggregate = {
+            "confirmed_queries": 0,
+            "confirmed_hits": 0,
+            "proposal_queries": 0,
+            "proposal_hits": 0,
+            "proposal_exact_matches": 0,
+            "combined_queries": 0,
+            "combined_hits": 0,
+        }
+        pecs_enabled = False
+        pecs_flushes = 0
+        pecs_predictor_load_failures = 0
+        pecs_flush_reasons: dict[str, int] = {}
         for last_scheduler_stats in self.last_scheduler_stats_dict.values():
             self.last_scheduler_stats.num_waiting_reqs += (
                 last_scheduler_stats.num_waiting_reqs
@@ -346,7 +391,53 @@ class AggregatedLoggingStatLogger(LoggingStatLogger, AggregateStatLoggerBase):
             self.last_scheduler_stats.kv_cache_usage += (
                 last_scheduler_stats.kv_cache_usage
             )
+            if pecs_stats := last_scheduler_stats.pecs_stats:
+                pecs_enabled = pecs_enabled or bool(pecs_stats.get("enabled", False))
+                pecs_flushes += int(pecs_stats.get("flushes", 0))
+                pecs_predictor_load_failures += int(
+                    pecs_stats.get("predictor_load_failures", 0)
+                )
+                for reason, count in dict(pecs_stats.get("flush_reasons", {})).items():
+                    pecs_flush_reasons[str(reason)] = (
+                        pecs_flush_reasons.get(str(reason), 0) + int(count)
+                    )
+                aggregate = dict(pecs_stats.get("aggregate", {}))
+                for field in pecs_aggregate:
+                    pecs_aggregate[field] += int(aggregate.get(field, 0))
         self.last_scheduler_stats.kv_cache_usage /= len(self.last_scheduler_stats_dict)
+        if pecs_enabled or pecs_flushes or pecs_predictor_load_failures:
+            proposal_queries = pecs_aggregate["proposal_queries"]
+            confirmed_queries = pecs_aggregate["confirmed_queries"]
+            combined_queries = pecs_aggregate["combined_queries"]
+            self.last_scheduler_stats.pecs_stats = {
+                "enabled": pecs_enabled,
+                "flushes": pecs_flushes,
+                "predictor_load_failures": pecs_predictor_load_failures,
+                "flush_reasons": pecs_flush_reasons,
+                "aggregate": {
+                    **pecs_aggregate,
+                    "confirmed_hit_rate": (
+                        pecs_aggregate["confirmed_hits"] / confirmed_queries
+                        if confirmed_queries
+                        else 0.0
+                    ),
+                    "proposal_hit_rate": (
+                        pecs_aggregate["proposal_hits"] / proposal_queries
+                        if proposal_queries
+                        else 0.0
+                    ),
+                    "proposal_exact_rate": (
+                        pecs_aggregate["proposal_exact_matches"] / proposal_queries
+                        if proposal_queries
+                        else 0.0
+                    ),
+                    "combined_hit_rate": (
+                        pecs_aggregate["combined_hits"] / combined_queries
+                        if combined_queries
+                        else 0.0
+                    ),
+                },
+            }
 
     def log(self):
         LoggingStatLogger.log(self)

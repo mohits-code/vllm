@@ -429,6 +429,7 @@ class EngineCore:
         engine_core_outputs = self.scheduler.update_from_output(
             scheduler_output, model_output
         )
+        self._attach_pecs_stats(engine_core_outputs)
 
         return engine_core_outputs, scheduler_output.total_num_scheduled_tokens > 0
 
@@ -533,6 +534,7 @@ class EngineCore:
         engine_core_outputs = self.scheduler.update_from_output(
             scheduler_output, model_output
         )
+        self._attach_pecs_stats(engine_core_outputs)
 
         # NOTE(nick): We can either handle the deferred tasks here or save
         # in a field and do it immediately once step_with_batch_queue is
@@ -757,6 +759,155 @@ class EngineCore:
         kwargs: dict[str, Any] | None = None,
     ) -> list[_R]:
         return self.model_executor.collective_rpc(method, timeout, args, kwargs)
+
+    def _collect_pecs_stats(self) -> dict[str, Any] | None:
+        if not self.vllm_config.parallel_config.enable_pecs:
+            return None
+
+        worker_stats: list[dict[int, dict[str, object]]] = self.collective_rpc(
+            "get_pecs_stats"
+        )
+        if not worker_stats:
+            return None
+
+        layer_accumulators: dict[int, dict[str, Any]] = {}
+        predictor_enabled = False
+        predictor_load_failures = 0
+        total_flushes = 0
+        flush_reasons: dict[str, int] = defaultdict(int)
+
+        count_fields = (
+            "confirmed_queries",
+            "confirmed_hits",
+            "proposal_queries",
+            "proposal_hits",
+            "proposal_exact_matches",
+            "combined_queries",
+            "combined_hits",
+        )
+
+        for rank_stats in worker_stats:
+            for layer_id, layer_stats in rank_stats.items():
+                acc = layer_accumulators.setdefault(
+                    layer_id,
+                    {
+                        "confirmed_queries": 0,
+                        "confirmed_hits": 0,
+                        "proposal_queries": 0,
+                        "proposal_hits": 0,
+                        "proposal_exact_matches": 0,
+                        "combined_queries": 0,
+                        "combined_hits": 0,
+                        "flushes": 0,
+                        "predictor_enabled": False,
+                        "predictor_load_failures": 0,
+                    },
+                )
+                for field in count_fields:
+                    acc[field] += int(layer_stats.get(field, 0))
+                acc["flushes"] += int(layer_stats.get("flushes", 0))
+                acc["predictor_load_failures"] += int(
+                    layer_stats.get("predictor_load_failures", 0)
+                )
+                acc["predictor_enabled"] = bool(
+                    acc["predictor_enabled"] or layer_stats.get("predictor_enabled", False)
+                )
+                for reason, count in dict(
+                    layer_stats.get("flush_reasons", {})
+                ).items():
+                    flush_reasons[str(reason)] += int(count)
+
+        layers: dict[int, dict[str, Any]] = {}
+        aggregate = {
+            "confirmed_queries": 0,
+            "confirmed_hits": 0,
+            "proposal_queries": 0,
+            "proposal_hits": 0,
+            "proposal_exact_matches": 0,
+            "combined_queries": 0,
+            "combined_hits": 0,
+        }
+
+        for layer_id, acc in sorted(layer_accumulators.items()):
+            predictor_enabled = predictor_enabled or bool(acc["predictor_enabled"])
+            predictor_load_failures += int(acc["predictor_load_failures"])
+            total_flushes += int(acc["flushes"])
+            for field in aggregate:
+                aggregate[field] += int(acc[field])
+
+            proposal_queries = int(acc["proposal_queries"])
+            confirmed_queries = int(acc["confirmed_queries"])
+            combined_queries = int(acc["combined_queries"])
+            layers[layer_id] = {
+                **acc,
+                "confirmed_hit_rate": (
+                    acc["confirmed_hits"] / confirmed_queries
+                    if confirmed_queries
+                    else 0.0
+                ),
+                "proposal_hit_rate": (
+                    acc["proposal_hits"] / proposal_queries if proposal_queries else 0.0
+                ),
+                "proposal_exact_rate": (
+                    acc["proposal_exact_matches"] / proposal_queries
+                    if proposal_queries
+                    else 0.0
+                ),
+                "combined_hit_rate": (
+                    acc["combined_hits"] / combined_queries if combined_queries else 0.0
+                ),
+            }
+
+        proposal_queries = aggregate["proposal_queries"]
+        confirmed_queries = aggregate["confirmed_queries"]
+        combined_queries = aggregate["combined_queries"]
+        return {
+            "enabled": predictor_enabled,
+            "predictor_load_failures": predictor_load_failures,
+            "flushes": total_flushes,
+            "flush_reasons": dict(flush_reasons),
+            "aggregate": {
+                **aggregate,
+                "confirmed_hit_rate": (
+                    aggregate["confirmed_hits"] / confirmed_queries
+                    if confirmed_queries
+                    else 0.0
+                ),
+                "proposal_hit_rate": (
+                    aggregate["proposal_hits"] / proposal_queries
+                    if proposal_queries
+                    else 0.0
+                ),
+                "proposal_exact_rate": (
+                    aggregate["proposal_exact_matches"] / proposal_queries
+                    if proposal_queries
+                    else 0.0
+                ),
+                "combined_hit_rate": (
+                    aggregate["combined_hits"] / combined_queries
+                    if combined_queries
+                    else 0.0
+                ),
+            },
+            "layers": layers,
+        }
+
+    def _attach_pecs_stats(
+        self, engine_core_outputs: dict[int, EngineCoreOutputs]
+    ) -> None:
+        if not self.vllm_config.parallel_config.enable_pecs:
+            return
+
+        stats = self._collect_pecs_stats()
+        if not stats:
+            return
+
+        target = next(iter(engine_core_outputs.values()), None)
+        if target is None:
+            engine_core_outputs[0] = target = EngineCoreOutputs()
+        if target.scheduler_stats is None:
+            target.scheduler_stats = SchedulerStats()
+        target.scheduler_stats.pecs_stats = stats
 
     def preprocess_add_request(self, request: EngineCoreRequest) -> tuple[Request, int]:
         """Preprocess the request.

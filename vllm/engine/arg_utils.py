@@ -443,6 +443,10 @@ class EngineArgs:
     enable_elastic_ep: bool = ParallelConfig.enable_elastic_ep
     enable_dbo: bool = ParallelConfig.enable_dbo
     ubatch_size: int = ParallelConfig.ubatch_size
+    enable_pecs: bool = ParallelConfig.enable_pecs
+    pecs_predictor_path: str | None = ParallelConfig.pecs_predictor_path
+    pecs_confirmed_capacity: int = ParallelConfig.pecs_confirmed_capacity
+    pecs_predictor_dtype: str = ParallelConfig.pecs_predictor_dtype
     dbo_decode_token_threshold: int = ParallelConfig.dbo_decode_token_threshold
     dbo_prefill_token_threshold: int = ParallelConfig.dbo_prefill_token_threshold
     disable_nccl_for_dp_synchronization: bool | None = (
@@ -983,6 +987,17 @@ class EngineArgs:
             "--all2all-backend", **parallel_kwargs["all2all_backend"]
         )
         parallel_group.add_argument("--enable-dbo", **parallel_kwargs["enable_dbo"])
+        parallel_group.add_argument("--enable-pecs", **parallel_kwargs["enable_pecs"])
+        parallel_group.add_argument(
+            "--pecs-predictor-path", **parallel_kwargs["pecs_predictor_path"]
+        )
+        parallel_group.add_argument(
+            "--pecs-confirmed-capacity",
+            **parallel_kwargs["pecs_confirmed_capacity"],
+        )
+        parallel_group.add_argument(
+            "--pecs-predictor-dtype", **parallel_kwargs["pecs_predictor_dtype"]
+        )
         parallel_group.add_argument(
             "--ubatch-size",
             **parallel_kwargs["ubatch_size"],
@@ -1852,6 +1867,10 @@ class EngineArgs:
             enable_elastic_ep=self.enable_elastic_ep,
             enable_dbo=self.enable_dbo,
             ubatch_size=self.ubatch_size,
+            enable_pecs=self.enable_pecs,
+            pecs_predictor_path=self.pecs_predictor_path,
+            pecs_confirmed_capacity=self.pecs_confirmed_capacity,
+            pecs_predictor_dtype=self.pecs_predictor_dtype,
             dbo_decode_token_threshold=self.dbo_decode_token_threshold,
             dbo_prefill_token_threshold=self.dbo_prefill_token_threshold,
             disable_nccl_for_dp_synchronization=self.disable_nccl_for_dp_synchronization,
