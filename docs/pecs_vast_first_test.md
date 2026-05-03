@@ -128,3 +128,149 @@ scripts/run_pecs_cluster_matrix.sh /workspace/pecs_matrix_runs
 - If you use Docker instead of a raw host env, the current official image is
   `vllm/vllm-openai`, and vLLM also documents source builds with
   `VLLM_USE_PRECOMPILED=1` when you only changed Python code.
+
+## Lessons From The First Real Vast Sessions
+
+The first paid PECS-on-vLLM attempts produced several environment-level failure
+patterns that should be treated as hard acceptance gates for future rentals.
+
+### Instance Acceptance Gate
+
+Before cloning anything, run:
+
+```bash
+df -h
+nvidia-smi
+```
+
+Reject the instance immediately if any of the following are true:
+
+- `/workspace` is a tiny overlay or nearly full
+- the GPUs show large idle memory use with no visible processes
+- fewer than 2 GPUs are visible
+
+Practical thresholds used during debugging:
+
+- require at least about `150G` free writable disk under `/workspace`
+- reject a box if idle `nvidia-smi` shows tens of GB already consumed per GPU
+
+### What Failed And Why
+
+1. Some `vLLM` template containers exposed only a `32G` writable overlay, which
+   broke:
+   - Hugging Face model downloads
+   - temporary-file creation
+   - log/result writing
+
+2. Some otherwise promising `2x A100 80GB` boxes exposed effectively full GPU
+   memory at worker startup. In one case `nvidia-smi` later showed about
+   `75.99 GiB / 80 GiB` used on each GPU with no visible process table entry.
+   `fuser -v /dev/nvidia*` later revealed leftover `vllm`, `EngineCore`, and
+   `Worker_TP` processes holding the device files. Future retries on the same
+   box must kill stale holders before concluding the host is broken.
+
+3. `2x A100 40GB` was too fragile for this first Mixtral validation. Even when
+   the host was clean, startup and KV-cache budgeting left too little headroom
+   for a low-friction first runtime proof.
+
+### Working Host Class
+
+The first cleanly usable target for this exact runtime validation was:
+
+- `2x A100 SXM4 80GB`
+- at least about `200G` free writable disk on `/workspace`
+- clean idle GPUs
+
+### Working Python Install Path
+
+On a host that already has the heavy vLLM dependencies installed, the fastest
+working path was:
+
+```bash
+cd /workspace
+git clone --branch pecs-prototype-work https://github.com/mohits-code/vllm.git vllm-pecs
+cd /workspace/vllm-pecs
+export VLLM_USE_PRECOMPILED=1
+pip install -e . --no-deps
+```
+
+### Working Runtime Environment
+
+```bash
+mkdir -p /workspace/hf_home /workspace/tmp /workspace/pecs_results
+export TMPDIR=/workspace/tmp
+export TEMP=/workspace/tmp
+export TMP=/workspace/tmp
+export HF_HOME=/workspace/hf_home
+export HUGGINGFACE_HUB_CACHE=/workspace/hf_home/hub
+export RESULTS_DIR=/workspace/pecs_results
+export MODEL="mistralai/Mixtral-8x7B-Instruct-v0.1"
+export PECS_PREDICTOR_PATH="/workspace/vllm-pecs/pecs_predictors/checkpoints_real_humaneval_temporal_w256"
+export PYTHON_BIN="$(which python)"
+```
+
+### Baseline Configuration That Reached A Healthy Server
+
+The `baseline` case succeeded on the clean `2x A100 80GB` host with:
+
+```bash
+BASE_PORT=8000 \
+TENSOR_PARALLEL_SIZE=2 \
+MAX_MODEL_LEN=512 \
+GPU_MEMORY_UTILIZATION=0.80 \
+RUN_EP_CASES=0 \
+scripts/run_pecs_vast_first_test.sh
+```
+
+Important nuance:
+
+- lower `gpu_memory_utilization` values avoided some startup checks on dirty
+  hosts but later failed because no KV cache blocks could be allocated
+- on the clean host, increasing `gpu_memory_utilization` and shrinking
+  `max_model_len` was the correct direction
+
+### PECS Result
+
+The `pecs` case exposed a real integration bug under compiled execution.
+
+Observed failure path:
+
+- `pre_route()`
+- `_maybe_load_predictor()`
+- `checkpoint_path.exists()`
+
+This path executes inside the forward path and is picked up by
+`torch.compile` / Dynamo. That filesystem existence check is not safe inside
+the compiled path.
+
+The same `pecs` configuration succeeded when eager mode disabled
+`torch.compile` and CUDA graphs:
+
+```bash
+MODEL="mistralai/Mixtral-8x7B-Instruct-v0.1" \
+PECS_PREDICTOR_PATH="/workspace/vllm-pecs/pecs_predictors/checkpoints_real_humaneval_temporal_w256" \
+PYTHON_BIN="$(which python)" \
+TENSOR_PARALLEL_SIZE=2 \
+MAX_MODEL_LEN=512 \
+GPU_MEMORY_UTILIZATION=0.80 \
+EXTRA_ARGS="--enforce-eager" \
+scripts/run_pecs_control_case.sh pecs
+```
+
+The eager `pecs` server:
+
+- loaded all 32 layer predictors
+- initialized KV cache successfully
+- started the OpenAI-compatible API server
+- served a real `/v1/chat/completions` request successfully
+
+### Immediate Code Follow-Up
+
+The next PECS fix should move predictor path resolution and lazy file-system
+checks out of the compiled forward path.
+
+Concretely:
+
+- do not call `Path.exists()` from `pre_route()`
+- pre-resolve checkpoint availability earlier in model/runtime initialization
+- keep compiled forward execution free of Python file I/O

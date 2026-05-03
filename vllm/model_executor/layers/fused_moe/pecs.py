@@ -212,9 +212,13 @@ class PecsLayerRuntime:
         self._last_map_signature: tuple[int, ...] | None = None
         self._predictor: FrozenMLPPredictor | None = None
         self._predictor_loaded = False
+        self._predictor_checkpoint_path: str | None = None
+        self._predictor_checkpoint: dict[str, object] | None = None
         self._pending_proposals: torch.Tensor | None = None
         self._pending_confirmed_snapshot: tuple[int, ...] = ()
         self._logical_to_physical_map: torch.Tensor | None = None
+
+        self._prepare_predictor_checkpoint()
 
     @property
     def predictor_available(self) -> bool:
@@ -245,17 +249,11 @@ class PecsLayerRuntime:
             return None
         return Path(self.predictor_path) / f"mlp_layer_{self.layer_id:02d}.pt"
 
-    def _maybe_load_predictor(self, hidden_states: torch.Tensor) -> None:
-        if (
-            not self.enabled
-            or self._predictor_loaded
-            or self.predictor_path is None
-            or self.layer_id is None
-        ):
+    def _prepare_predictor_checkpoint(self) -> None:
+        if not self.enabled or self.predictor_path is None or self.layer_id is None:
             return
 
         checkpoint_path = self._checkpoint_path()
-        self._predictor_loaded = True
         if checkpoint_path is None or not checkpoint_path.exists():
             logger.warning(
                 "PECS predictor checkpoint missing for layer %s at %s; continuing "
@@ -266,7 +264,23 @@ class PecsLayerRuntime:
             self.stats.predictor_load_failures += 1
             return
 
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        self._predictor_checkpoint_path = os.fspath(checkpoint_path)
+        self._predictor_checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+    def _maybe_load_predictor(self, hidden_states: torch.Tensor) -> None:
+        if (
+            not self.enabled
+            or self._predictor_loaded
+            or self.predictor_path is None
+            or self.layer_id is None
+        ):
+            return
+
+        self._predictor_loaded = True
+        checkpoint = self._predictor_checkpoint
+        if checkpoint is None:
+            return
+
         hidden_dim = int(checkpoint["hidden_dim"])
         num_experts = int(checkpoint["num_experts"])
         hidden_width = int(checkpoint["hidden_width"])
@@ -290,7 +304,7 @@ class PecsLayerRuntime:
         logger.info(
             "Loaded PECS predictor for %s from %s",
             self.layer_name,
-            os.fspath(checkpoint_path),
+            self._predictor_checkpoint_path,
         )
 
     @staticmethod
