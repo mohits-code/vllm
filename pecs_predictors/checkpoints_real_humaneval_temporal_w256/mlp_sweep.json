@@ -1,0 +1,754 @@
+{
+  "avg_any_overlap_rate": 0.9912892421515697,
+  "avg_exact_match_rate": 0.7325347430513898,
+  "avg_top1_in_true_rate": 0.9622825434913017,
+  "dropout": 0.0,
+  "hidden_width": 256,
+  "input_norm": false,
+  "layers": [
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_00.pt",
+      "eval": {
+        "any_overlap_rate": 0.9986002799440112,
+        "exact_match_rate": 0.8712257548490302,
+        "expected_intersection": 1.8698260347930413,
+        "layer_id": 0.0,
+        "top1_in_true_rate": 0.9952009598080384,
+        "total_records": 5001.0
+      },
+      "layer_id": 0,
+      "train": {
+        "layer_id": 0.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.0038398595966605675,
+        "val_fraction": 0.1,
+        "val_loss": 0.013379311189055443
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_01.pt",
+      "eval": {
+        "any_overlap_rate": 0.9976004799040192,
+        "exact_match_rate": 0.8074385122975405,
+        "expected_intersection": 1.8050389922015597,
+        "layer_id": 1.0,
+        "top1_in_true_rate": 0.9854029194161168,
+        "total_records": 5001.0
+      },
+      "layer_id": 1,
+      "train": {
+        "layer_id": 1.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.0037987056033064923,
+        "val_fraction": 0.1,
+        "val_loss": 0.021363597363233566
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_02.pt",
+      "eval": {
+        "any_overlap_rate": 0.9978004399120176,
+        "exact_match_rate": 0.8194361127774445,
+        "expected_intersection": 1.817236552689462,
+        "layer_id": 2.0,
+        "top1_in_true_rate": 0.9842031593681264,
+        "total_records": 5001.0
+      },
+      "layer_id": 2,
+      "train": {
+        "layer_id": 2.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.004913171261755956,
+        "val_fraction": 0.1,
+        "val_loss": 0.0207337848842144
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_03.pt",
+      "eval": {
+        "any_overlap_rate": 0.9956008798240352,
+        "exact_match_rate": 0.7914417116576684,
+        "expected_intersection": 1.7870425914817036,
+        "layer_id": 3.0,
+        "top1_in_true_rate": 0.973005398920216,
+        "total_records": 5001.0
+      },
+      "layer_id": 3,
+      "train": {
+        "layer_id": 3.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.004856155176336567,
+        "val_fraction": 0.1,
+        "val_loss": 0.040251314640045166
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_04.pt",
+      "eval": {
+        "any_overlap_rate": 0.9914017196560688,
+        "exact_match_rate": 0.7772445510897821,
+        "expected_intersection": 1.7686462707458508,
+        "layer_id": 4.0,
+        "top1_in_true_rate": 0.9694061187762447,
+        "total_records": 5001.0
+      },
+      "layer_id": 4,
+      "train": {
+        "layer_id": 4.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.004025846318755712,
+        "val_fraction": 0.1,
+        "val_loss": 0.02695639617741108
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_05.pt",
+      "eval": {
+        "any_overlap_rate": 0.9936012797440512,
+        "exact_match_rate": 0.7818436312737452,
+        "expected_intersection": 1.7754449110177963,
+        "layer_id": 5.0,
+        "top1_in_true_rate": 0.9702059588082383,
+        "total_records": 5001.0
+      },
+      "layer_id": 5,
+      "train": {
+        "layer_id": 5.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.004014363227826025,
+        "val_fraction": 0.1,
+        "val_loss": 0.03505314886569977
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_06.pt",
+      "eval": {
+        "any_overlap_rate": 0.9944011197760448,
+        "exact_match_rate": 0.7468506298740252,
+        "expected_intersection": 1.74125174965007,
+        "layer_id": 6.0,
+        "top1_in_true_rate": 0.9702059588082383,
+        "total_records": 5001.0
+      },
+      "layer_id": 6,
+      "train": {
+        "layer_id": 6.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.004637076545299755,
+        "val_fraction": 0.1,
+        "val_loss": 0.03694983944296837
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_07.pt",
+      "eval": {
+        "any_overlap_rate": 0.9942011597680463,
+        "exact_match_rate": 0.7590481903619276,
+        "expected_intersection": 1.753249350129974,
+        "layer_id": 7.0,
+        "top1_in_true_rate": 0.9728054389122176,
+        "total_records": 5001.0
+      },
+      "layer_id": 7,
+      "train": {
+        "layer_id": 7.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.004793970354108347,
+        "val_fraction": 0.1,
+        "val_loss": 0.03127565328031778
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_08.pt",
+      "eval": {
+        "any_overlap_rate": 0.9952009598080384,
+        "exact_match_rate": 0.7736452709458108,
+        "expected_intersection": 1.7688462307538493,
+        "layer_id": 8.0,
+        "top1_in_true_rate": 0.9738052389522096,
+        "total_records": 5001.0
+      },
+      "layer_id": 8,
+      "train": {
+        "layer_id": 8.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.005228288601049119,
+        "val_fraction": 0.1,
+        "val_loss": 0.03708655945956707
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_09.pt",
+      "eval": {
+        "any_overlap_rate": 0.9958008398320336,
+        "exact_match_rate": 0.7742451509698061,
+        "expected_intersection": 1.7700459908018396,
+        "layer_id": 9.0,
+        "top1_in_true_rate": 0.966006798640272,
+        "total_records": 5001.0
+      },
+      "layer_id": 9,
+      "train": {
+        "layer_id": 9.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.005087824331389533,
+        "val_fraction": 0.1,
+        "val_loss": 0.034134465269744396
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_10.pt",
+      "eval": {
+        "any_overlap_rate": 0.9962007598480304,
+        "exact_match_rate": 0.7850429914017196,
+        "expected_intersection": 1.78124375124975,
+        "layer_id": 10.0,
+        "top1_in_true_rate": 0.976004799040192,
+        "total_records": 5001.0
+      },
+      "layer_id": 10,
+      "train": {
+        "layer_id": 10.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.0035833465323473015,
+        "val_fraction": 0.1,
+        "val_loss": 0.02353460993617773
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_11.pt",
+      "eval": {
+        "any_overlap_rate": 0.9984003199360127,
+        "exact_match_rate": 0.7670465906818636,
+        "expected_intersection": 1.7654469106178765,
+        "layer_id": 11.0,
+        "top1_in_true_rate": 0.9816036792641472,
+        "total_records": 5001.0
+      },
+      "layer_id": 11,
+      "train": {
+        "layer_id": 11.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.004379876915158497,
+        "val_fraction": 0.1,
+        "val_loss": 0.030240782536566257
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_12.pt",
+      "eval": {
+        "any_overlap_rate": 0.996000799840032,
+        "exact_match_rate": 0.7674465106978604,
+        "expected_intersection": 1.7634473105378925,
+        "layer_id": 12.0,
+        "top1_in_true_rate": 0.9784043191361728,
+        "total_records": 5001.0
+      },
+      "layer_id": 12,
+      "train": {
+        "layer_id": 12.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.004763351339432929,
+        "val_fraction": 0.1,
+        "val_loss": 0.032686371356248856
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_13.pt",
+      "eval": {
+        "any_overlap_rate": 0.9944011197760448,
+        "exact_match_rate": 0.7636472705458909,
+        "expected_intersection": 1.7580483903219357,
+        "layer_id": 13.0,
+        "top1_in_true_rate": 0.9762047590481904,
+        "total_records": 5001.0
+      },
+      "layer_id": 13,
+      "train": {
+        "layer_id": 13.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.003469133322748045,
+        "val_fraction": 0.1,
+        "val_loss": 0.022266156040132046
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_14.pt",
+      "eval": {
+        "any_overlap_rate": 0.99500099980004,
+        "exact_match_rate": 0.769246150769846,
+        "expected_intersection": 1.764247150569886,
+        "layer_id": 14.0,
+        "top1_in_true_rate": 0.9742051589682064,
+        "total_records": 5001.0
+      },
+      "layer_id": 14,
+      "train": {
+        "layer_id": 14.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.003713708422664139,
+        "val_fraction": 0.1,
+        "val_loss": 0.02404143288731575
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_15.pt",
+      "eval": {
+        "any_overlap_rate": 0.9954009198160368,
+        "exact_match_rate": 0.7634473105378924,
+        "expected_intersection": 1.7588482303539292,
+        "layer_id": 15.0,
+        "top1_in_true_rate": 0.9726054789042191,
+        "total_records": 5001.0
+      },
+      "layer_id": 15,
+      "train": {
+        "layer_id": 15.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.005377284639204542,
+        "val_fraction": 0.1,
+        "val_loss": 0.03492839075624943
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_16.pt",
+      "eval": {
+        "any_overlap_rate": 0.9932013597280543,
+        "exact_match_rate": 0.7238552289542092,
+        "expected_intersection": 1.7170565886822635,
+        "layer_id": 16.0,
+        "top1_in_true_rate": 0.9642071585682863,
+        "total_records": 5001.0
+      },
+      "layer_id": 16,
+      "train": {
+        "layer_id": 16.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.0057697301057891715,
+        "val_fraction": 0.1,
+        "val_loss": 0.03779848292469978
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_17.pt",
+      "eval": {
+        "any_overlap_rate": 0.9934013197360528,
+        "exact_match_rate": 0.7488502299540092,
+        "expected_intersection": 1.742251549690062,
+        "layer_id": 17.0,
+        "top1_in_true_rate": 0.9610077984403119,
+        "total_records": 5001.0
+      },
+      "layer_id": 17,
+      "train": {
+        "layer_id": 17.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.00570030960564812,
+        "val_fraction": 0.1,
+        "val_loss": 0.03970491327345371
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_18.pt",
+      "eval": {
+        "any_overlap_rate": 0.9966006798640272,
+        "exact_match_rate": 0.7478504299140172,
+        "expected_intersection": 1.7444511097780444,
+        "layer_id": 18.0,
+        "top1_in_true_rate": 0.9722055588882224,
+        "total_records": 5001.0
+      },
+      "layer_id": 18,
+      "train": {
+        "layer_id": 18.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.006664723856374621,
+        "val_fraction": 0.1,
+        "val_loss": 0.04451732151210308
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_19.pt",
+      "eval": {
+        "any_overlap_rate": 0.9882023595280944,
+        "exact_match_rate": 0.7180563887222555,
+        "expected_intersection": 1.70625874825035,
+        "layer_id": 19.0,
+        "top1_in_true_rate": 0.9560087982403519,
+        "total_records": 5001.0
+      },
+      "layer_id": 19,
+      "train": {
+        "layer_id": 19.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.013495799154043198,
+        "val_fraction": 0.1,
+        "val_loss": 0.05768382176756859
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_20.pt",
+      "eval": {
+        "any_overlap_rate": 0.9886022795440912,
+        "exact_match_rate": 0.6732653469306139,
+        "expected_intersection": 1.661867626474705,
+        "layer_id": 20.0,
+        "top1_in_true_rate": 0.9468106378724255,
+        "total_records": 5001.0
+      },
+      "layer_id": 20,
+      "train": {
+        "layer_id": 20.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.013381041638139222,
+        "val_fraction": 0.1,
+        "val_loss": 0.08482516184449196
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_21.pt",
+      "eval": {
+        "any_overlap_rate": 0.974005198960208,
+        "exact_match_rate": 0.6316736652669466,
+        "expected_intersection": 1.6056788642271547,
+        "layer_id": 21.0,
+        "top1_in_true_rate": 0.9202159568086383,
+        "total_records": 5001.0
+      },
+      "layer_id": 21,
+      "train": {
+        "layer_id": 21.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.01620401649011506,
+        "val_fraction": 0.1,
+        "val_loss": 0.0876467116177082
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_22.pt",
+      "eval": {
+        "any_overlap_rate": 0.98000399920016,
+        "exact_match_rate": 0.6566686662667467,
+        "expected_intersection": 1.6366726654669066,
+        "layer_id": 22.0,
+        "top1_in_true_rate": 0.9350129974005199,
+        "total_records": 5001.0
+      },
+      "layer_id": 22,
+      "train": {
+        "layer_id": 22.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.018207688091529742,
+        "val_fraction": 0.1,
+        "val_loss": 0.0996435098350048
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_23.pt",
+      "eval": {
+        "any_overlap_rate": 0.9774045190961808,
+        "exact_match_rate": 0.5776844631073785,
+        "expected_intersection": 1.5550889822035592,
+        "layer_id": 23.0,
+        "top1_in_true_rate": 0.9144171165766847,
+        "total_records": 5001.0
+      },
+      "layer_id": 23,
+      "train": {
+        "layer_id": 23.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.01761676650494337,
+        "val_fraction": 0.1,
+        "val_loss": 0.10432639345526695
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_24.pt",
+      "eval": {
+        "any_overlap_rate": 0.977004599080184,
+        "exact_match_rate": 0.5756848630273945,
+        "expected_intersection": 1.5526894621075784,
+        "layer_id": 24.0,
+        "top1_in_true_rate": 0.9178164367126574,
+        "total_records": 5001.0
+      },
+      "layer_id": 24,
+      "train": {
+        "layer_id": 24.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.019232533251245815,
+        "val_fraction": 0.1,
+        "val_loss": 0.10668199509382248
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_25.pt",
+      "eval": {
+        "any_overlap_rate": 0.9738052389522096,
+        "exact_match_rate": 0.645870825834833,
+        "expected_intersection": 1.6196760647870425,
+        "layer_id": 25.0,
+        "top1_in_true_rate": 0.9174165166966607,
+        "total_records": 5001.0
+      },
+      "layer_id": 25,
+      "train": {
+        "layer_id": 25.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.019997163572245173,
+        "val_fraction": 0.1,
+        "val_loss": 0.08664566278457642
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_26.pt",
+      "eval": {
+        "any_overlap_rate": 0.982003599280144,
+        "exact_match_rate": 0.6484703059388123,
+        "expected_intersection": 1.6304739052189563,
+        "layer_id": 26.0,
+        "top1_in_true_rate": 0.9422115576884623,
+        "total_records": 5001.0
+      },
+      "layer_id": 26,
+      "train": {
+        "layer_id": 26.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.016938217915594578,
+        "val_fraction": 0.1,
+        "val_loss": 0.08928917348384857
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_27.pt",
+      "eval": {
+        "any_overlap_rate": 0.9860027994401119,
+        "exact_match_rate": 0.6270745850829834,
+        "expected_intersection": 1.6130773845230955,
+        "layer_id": 27.0,
+        "top1_in_true_rate": 0.9442111577684463,
+        "total_records": 5001.0
+      },
+      "layer_id": 27,
+      "train": {
+        "layer_id": 27.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.017032340065472655,
+        "val_fraction": 0.1,
+        "val_loss": 0.07126588001847267
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_28.pt",
+      "eval": {
+        "any_overlap_rate": 0.9936012797440512,
+        "exact_match_rate": 0.7172565486902619,
+        "expected_intersection": 1.7108578284343132,
+        "layer_id": 28.0,
+        "top1_in_true_rate": 0.967006598680264,
+        "total_records": 5001.0
+      },
+      "layer_id": 28,
+      "train": {
+        "layer_id": 28.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.01596789574250579,
+        "val_fraction": 0.1,
+        "val_loss": 0.061805225908756256
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_29.pt",
+      "eval": {
+        "any_overlap_rate": 0.9946010797840432,
+        "exact_match_rate": 0.6862627474505099,
+        "expected_intersection": 1.680863827234553,
+        "layer_id": 29.0,
+        "top1_in_true_rate": 0.9572085582883423,
+        "total_records": 5001.0
+      },
+      "layer_id": 29,
+      "train": {
+        "layer_id": 29.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.013492393980009688,
+        "val_fraction": 0.1,
+        "val_loss": 0.05564006231725216
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_30.pt",
+      "eval": {
+        "any_overlap_rate": 0.9964007198560288,
+        "exact_match_rate": 0.7534493101379725,
+        "expected_intersection": 1.7498500299940012,
+        "layer_id": 30.0,
+        "top1_in_true_rate": 0.9768046390721855,
+        "total_records": 5001.0
+      },
+      "layer_id": 30,
+      "train": {
+        "layer_id": 30.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.012825508653703663,
+        "val_fraction": 0.1,
+        "val_loss": 0.04063071310520172
+      }
+    },
+    {
+      "checkpoint": "artifacts/checkpoints_real_humaneval_temporal_w256/mlp_layer_31.pt",
+      "eval": {
+        "any_overlap_rate": 0.9968006398720256,
+        "exact_match_rate": 0.7908418316336733,
+        "expected_intersection": 1.7876424715056989,
+        "layer_id": 31.0,
+        "top1_in_true_rate": 0.9812037592481504,
+        "total_records": 5001.0
+      },
+      "layer_id": 31,
+      "train": {
+        "layer_id": 31.0,
+        "loss_kind": "kl",
+        "num_samples": 10001.0,
+        "split_kind": "temporal",
+        "test_min_step_id": 5000.0,
+        "train_fraction": 0.5,
+        "train_loss": 0.014638819059150087,
+        "val_fraction": 0.1,
+        "val_loss": 0.0397614985704422
+      }
+    }
+  ],
+  "loss_kind": "kl",
+  "max_exact_match_rate": 0.8712257548490302,
+  "min_exact_match_rate": 0.5756848630273945,
+  "num_layers": 32,
+  "split_kind": "temporal",
+  "trace_dir": "downloads/first_humaneval_run/first_humaneval_run/coding_cluster_humaneval",
+  "train_fraction": 0.5,
+  "val_fraction": 0.1
+}
