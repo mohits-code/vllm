@@ -4768,11 +4768,19 @@ class GPUModelRunner(
                 self.model = model_loader.load_model(
                     vllm_config=self.vllm_config, model_config=self.model_config
                 )
-                prepare_pecs_predictors = getattr(
-                    self.model, "prepare_pecs_predictors", None
-                )
-                if callable(prepare_pecs_predictors):
-                    prepare_pecs_predictors()
+                prepared_pecs_predictors = 0
+                for module in self.model.modules():
+                    prepare_pecs_predictor = getattr(
+                        module, "prepare_pecs_predictor", None
+                    )
+                    if callable(prepare_pecs_predictor):
+                        prepare_pecs_predictor()
+                        prepared_pecs_predictors += 1
+                if prepared_pecs_predictors > 0:
+                    logger.info_once(
+                        "Prepared %d PECS predictors during model load.",
+                        prepared_pecs_predictors,
+                    )
                 if self.lora_config:
                     self.model = self.load_lora_model(
                         self.model, self.vllm_config, self.device
