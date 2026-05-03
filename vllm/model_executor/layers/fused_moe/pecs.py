@@ -213,7 +213,6 @@ class PecsLayerRuntime:
         self._predictor: FrozenMLPPredictor | None = None
         self._predictor_loaded = False
         self._predictor_checkpoint_path: str | None = None
-        self._predictor_checkpoint: dict[str, object] | None = None
         self._pending_proposals: torch.Tensor | None = None
         self._pending_confirmed_snapshot: tuple[int, ...] = ()
         self._logical_to_physical_map: torch.Tensor | None = None
@@ -265,21 +264,7 @@ class PecsLayerRuntime:
             return
 
         self._predictor_checkpoint_path = os.fspath(checkpoint_path)
-        self._predictor_checkpoint = torch.load(checkpoint_path, map_location="cpu")
-
-    def _maybe_load_predictor(self, hidden_states: torch.Tensor) -> None:
-        if (
-            not self.enabled
-            or self._predictor_loaded
-            or self.predictor_path is None
-            or self.layer_id is None
-        ):
-            return
-
-        self._predictor_loaded = True
-        checkpoint = self._predictor_checkpoint
-        if checkpoint is None:
-            return
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
 
         hidden_dim = int(checkpoint["hidden_dim"])
         num_experts = int(checkpoint["num_experts"])
@@ -293,14 +278,30 @@ class PecsLayerRuntime:
             input_norm=input_norm,
         )
         predictor.load_state_dict(checkpoint["model_state"])
-        predictor_dtype = _resolve_dtype(self.predictor_dtype, hidden_states.dtype)
-        predictor = predictor.to(device=hidden_states.device, dtype=predictor_dtype)
         predictor.eval()
         for param in predictor.parameters():
             param.requires_grad_(False)
 
         self._predictor = predictor
         self.stats.predictor_enabled = True
+
+    def _maybe_load_predictor(self, hidden_states: torch.Tensor) -> None:
+        if (
+            not self.enabled
+            or self._predictor_loaded
+            or self.predictor_path is None
+            or self.layer_id is None
+        ):
+            return
+
+        self._predictor_loaded = True
+        predictor = self._predictor
+        if predictor is None:
+            return
+
+        predictor_dtype = _resolve_dtype(self.predictor_dtype, hidden_states.dtype)
+        predictor = predictor.to(device=hidden_states.device, dtype=predictor_dtype)
+        self._predictor = predictor
         logger.info(
             "Loaded PECS predictor for %s from %s",
             self.layer_name,
