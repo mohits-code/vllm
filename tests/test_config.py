@@ -9,12 +9,14 @@ from unittest.mock import patch
 
 import pydantic
 import pytest
+import torch
 from pydantic import ValidationError
 
 import vllm.config.vllm as vllm_config_module
 from vllm.compilation.backends import VllmBackend
 from vllm.config import (
     CompilationConfig,
+    DeviceConfig,
     KernelConfig,
     ModelConfig,
     ParallelConfig,
@@ -35,6 +37,19 @@ from vllm.config.vllm import (
 from vllm.platforms import current_platform
 
 DEVICE_TYPE = current_platform.device_type
+
+
+def test_device_config_falls_back_to_vllm_target_device(monkeypatch):
+    monkeypatch.setenv("VLLM_TARGET_DEVICE", "cuda")
+    monkeypatch.setattr(
+        "vllm.platforms.current_platform",
+        SimpleNamespace(device_type=""),
+    )
+
+    config = DeviceConfig()
+
+    assert config.device_type == "cuda"
+    assert config.device == torch.device("cuda")
 
 
 def test_compile_config_repr_succeeds():
