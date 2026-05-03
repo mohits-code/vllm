@@ -1572,6 +1572,10 @@ class FusedMoE(PluggableLayer):
     def get_pecs_stats(self) -> dict[str, object]:
         return self.pecs.snapshot()
 
+    def prepare_pecs_predictor(self) -> None:
+        fallback_dtype = self.w13_weight.dtype
+        self.pecs.prepare_predictor(device=self.w13_weight.device, fallback_dtype=fallback_dtype)
+
     @property
     def expert_map(self) -> torch.Tensor | None:
         return (

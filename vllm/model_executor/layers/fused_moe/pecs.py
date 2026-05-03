@@ -286,22 +286,29 @@ class PecsLayerRuntime:
         self.stats.predictor_enabled = True
 
     def _maybe_load_predictor(self, hidden_states: torch.Tensor) -> None:
-        if (
-            not self.enabled
-            or self._predictor_loaded
-            or self.predictor_path is None
-            or self.layer_id is None
-        ):
+        if not self.enabled or not self._predictor_loaded:
+            raise RuntimeError(
+                f"PECS predictor for {self.layer_name} was not prepared before "
+                "compiled forward execution."
+            )
+
+    def prepare_predictor(self, *, device: torch.device, fallback_dtype: torch.dtype) -> None:
+        if not self.enabled or self._predictor_loaded:
             return
 
-        self._predictor_loaded = True
         predictor = self._predictor
         if predictor is None:
+            self._predictor_loaded = True
             return
 
-        predictor_dtype = _resolve_dtype(self.predictor_dtype, hidden_states.dtype)
-        predictor = predictor.to(device=hidden_states.device, dtype=predictor_dtype)
+        predictor_dtype = _resolve_dtype(self.predictor_dtype, fallback_dtype)
+        predictor = predictor.to(device=device, dtype=predictor_dtype)
+        predictor.eval()
+        for param in predictor.parameters():
+            param.requires_grad_(False)
+
         self._predictor = predictor
+        self._predictor_loaded = True
         logger.info(
             "Loaded PECS predictor for %s from %s",
             self.layer_name,

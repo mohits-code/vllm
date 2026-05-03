@@ -160,6 +160,11 @@ class MoEMixin(MixtureOfExperts):
             if hasattr(mlp_layer.experts, "get_pecs_stats")
         }
 
+    def prepare_pecs_predictors(self) -> None:
+        for mlp_layer in self.mlp_moe_layers:
+            if hasattr(mlp_layer.experts, "prepare_pecs_predictor"):
+                mlp_layer.experts.prepare_pecs_predictor()
+
     def get_expert_mapping(self) -> list[tuple[str, str, int, str]]:
         """
         Params for weights, fp8 weight scales, fp8 activation scales

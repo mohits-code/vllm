@@ -4768,6 +4768,11 @@ class GPUModelRunner(
                 self.model = model_loader.load_model(
                     vllm_config=self.vllm_config, model_config=self.model_config
                 )
+                prepare_pecs_predictors = getattr(
+                    self.model, "prepare_pecs_predictors", None
+                )
+                if callable(prepare_pecs_predictors):
+                    prepare_pecs_predictors()
                 if self.lora_config:
                     self.model = self.load_lora_model(
                         self.model, self.vllm_config, self.device
