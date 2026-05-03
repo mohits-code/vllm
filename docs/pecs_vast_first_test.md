@@ -274,3 +274,63 @@ Concretely:
 - do not call `Path.exists()` from `pre_route()`
 - pre-resolve checkpoint availability earlier in model/runtime initialization
 - keep compiled forward execution free of Python file I/O
+
+## Final Outcome From The First Session
+
+The first real runtime validation ended with three concrete results:
+
+- `baseline` worked on a clean `2x A100 80GB` host
+- `pecs` worked end to end in eager mode and served a real request
+- `pecs` did not run cleanly under full `torch.compile` tracing because
+  `pre_route()` still contains Python-heavy control logic
+
+The initialization issues were narrowed and fixed in stages:
+
+- predictor checkpoint discovery moved out of forward
+- predictor module construction moved out of forward
+- predictor device/dtype preparation moved out of forward
+- PECS predictor preparation switched to a generic model-module traversal
+
+After those fixes, the remaining compiled-mode failure was inside the PECS
+proposal logic itself rather than lazy setup. Specifically, the proposal path
+still performs Python-side ranking and list conversion such as:
+
+- `.tolist()`
+- `zip(...)`
+- Python tuple/list/set merging
+
+### Practical Short-Term Fix
+
+The pragmatic fix for the current branch is to treat the PECS control hooks as
+non-Dynamo code:
+
+- `PecsLayerRuntime.pre_route`
+- `PecsLayerRuntime.post_route`
+
+These hooks can be marked with `@torch.compiler.disable`, which preserves the
+compiled model path while keeping PECS setup, proposal ranking, and statistics
+updates outside the traced graph.
+
+This does **not** prove that PECS is compile-native. It proves that:
+
+- the integration works
+- the predictor artifacts are valid
+- the PECS control logic can run correctly alongside a compiled wrapper when
+  explicitly excluded from tracing
+
+### Local Validation Strategy
+
+Do not rerun the full vLLM server locally just to validate this control-path
+change.
+
+Use a CPU-only fake harness instead:
+
+- set `VLLM_TARGET_DEVICE=cpu`
+- import `PecsLayerRuntime` directly from the worktree
+- build a tiny frozen checkpoint
+- call `prepare_predictor(...)`
+- run a small `torch.compile(..., backend=\"eager\")` wrapper around
+  `pre_route()` / `post_route()`
+
+That is enough to validate the PECS control-path contract without needing the
+CUDA extension or a full model load.

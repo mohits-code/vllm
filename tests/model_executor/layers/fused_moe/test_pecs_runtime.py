@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import torch
 
 from vllm.model_executor.layers.fused_moe.pecs import (
@@ -38,17 +39,23 @@ def _write_checkpoint(checkpoint_dir: Path, layer_id: int = 0) -> None:
     )
 
 
-def test_pecs_runtime_loads_predictor_and_tracks_hits(tmp_path: Path) -> None:
-    _write_checkpoint(tmp_path)
-
+def _build_runtime(checkpoint_dir: Path) -> PecsLayerRuntime:
     pecs = PecsLayerRuntime(
         enabled=True,
         layer_name="model.layers.0.block_sparse_moe",
         top_k=2,
         confirmed_capacity=2,
-        predictor_path=str(tmp_path),
+        predictor_path=str(checkpoint_dir),
         predictor_dtype="float32",
     )
+    pecs.prepare_predictor(device=torch.device("cpu"), fallback_dtype=torch.float32)
+    return pecs
+
+
+def test_pecs_runtime_loads_predictor_and_tracks_hits(tmp_path: Path) -> None:
+    _write_checkpoint(tmp_path)
+
+    pecs = _build_runtime(tmp_path)
 
     hidden_states = torch.randn(2, 4)
     plan = pecs.pre_route(hidden_states)
@@ -76,14 +83,7 @@ def test_pecs_runtime_loads_predictor_and_tracks_hits(tmp_path: Path) -> None:
 def test_pecs_runtime_flushes_on_eplb_remap(tmp_path: Path) -> None:
     _write_checkpoint(tmp_path)
 
-    pecs = PecsLayerRuntime(
-        enabled=True,
-        layer_name="model.layers.0.block_sparse_moe",
-        top_k=2,
-        confirmed_capacity=2,
-        predictor_path=str(tmp_path),
-        predictor_dtype="float32",
-    )
+    pecs = _build_runtime(tmp_path)
 
     pecs.pre_route(torch.randn(1, 4))
     pecs.post_route(torch.tensor([[0, 1]], dtype=torch.int32))
@@ -103,14 +103,7 @@ def test_pecs_runtime_flushes_on_eplb_remap(tmp_path: Path) -> None:
 def test_pecs_runtime_maps_combined_candidates_through_eplb(tmp_path: Path) -> None:
     _write_checkpoint(tmp_path)
 
-    pecs = PecsLayerRuntime(
-        enabled=True,
-        layer_name="model.layers.0.block_sparse_moe",
-        top_k=2,
-        confirmed_capacity=2,
-        predictor_path=str(tmp_path),
-        predictor_dtype="float32",
-    )
+    pecs = _build_runtime(tmp_path)
 
     initial_map = torch.tensor([[4, 5], [1, 3], [2, 0]], dtype=torch.int32)
     pecs.on_eplb_map_update(initial_map)
@@ -119,3 +112,27 @@ def test_pecs_runtime_maps_combined_candidates_through_eplb(tmp_path: Path) -> N
     assert plan is not None
     assert plan.proposal_experts == (0, 1)
     assert plan.combined_physical_experts == (4, 5, 1, 3)
+
+
+@pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile unavailable")
+def test_pecs_runtime_can_run_behind_compiled_wrapper(tmp_path: Path) -> None:
+    _write_checkpoint(tmp_path)
+
+    pecs = _build_runtime(tmp_path)
+
+    class _Wrapper(torch.nn.Module):
+        def __init__(self, runtime: PecsLayerRuntime) -> None:
+            super().__init__()
+            self.runtime = runtime
+
+        def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+            plan = self.runtime.pre_route(hidden_states)
+            assert plan is not None
+            assert plan.proposal_ids is not None
+            return plan.proposal_ids.to(dtype=torch.float32)
+
+    wrapper = _Wrapper(pecs)
+    compiled = torch.compile(wrapper, backend="eager")
+
+    proposal_ids = compiled(torch.randn(2, 4))
+    assert tuple(proposal_ids.shape) == (2, 2)

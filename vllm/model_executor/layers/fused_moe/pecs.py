@@ -363,6 +363,7 @@ class PecsLayerRuntime:
                 seen.add(expert_id)
         return tuple(physical_ordered)
 
+    @torch.compiler.disable
     def pre_route(self, hidden_states: torch.Tensor) -> PecsPrefetchPlan | None:
         if not self.enabled:
             return None
@@ -425,6 +426,7 @@ class PecsLayerRuntime:
             predicted_tensor = predicted.to(device=actual.device, dtype=actual.dtype)
         return (actual.unsqueeze(-1) == predicted_tensor.unsqueeze(-2)).any(dim=(-1, -2))
 
+    @torch.compiler.disable
     def post_route(self, logical_ids: torch.Tensor) -> None:
         if not self.enabled:
             return
