@@ -12,7 +12,7 @@ graph captures, ensuring H2D copies are properly captured.
 from abc import ABC, abstractmethod
 from collections.abc import Generator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 import torch
 import torch.nn as nn
@@ -23,6 +23,49 @@ from vllm.logger import init_logger
 from vllm.model_executor.offloader.base import BaseOffloader, should_pin_memory
 
 logger = init_logger(__name__)
+
+
+class _PecsLayerModule(Protocol):
+    layer_name: str
+    local_num_experts: int
+
+    def _map_global_expert_id_to_local_expert_id(self, expert_id: int) -> int: ...
+
+
+@dataclass(frozen=True)
+class _PecsLayerBinding:
+    layer_name: str
+    param_prefix: str
+    module_offloader: "_ModuleOffloader"
+    moe_layer: _PecsLayerModule
+
+
+def _normalize_expert_ids(
+    expert_ids: tuple[int, ...] | list[int],
+    *,
+    num_experts: int,
+) -> tuple[int, ...]:
+    ordered: list[int] = []
+    seen: set[int] = set()
+    for raw_expert_id in expert_ids:
+        expert_id = int(raw_expert_id)
+        if expert_id < 0 or expert_id >= num_experts or expert_id in seen:
+            continue
+        ordered.append(expert_id)
+        seen.add(expert_id)
+    return tuple(ordered)
+
+
+def _copy_selected_expert_slices(
+    src: torch.Tensor,
+    dst: torch.Tensor,
+    expert_ids: tuple[int, ...],
+) -> int:
+    copied = 0
+    for expert_id in expert_ids:
+        dst[expert_id].copy_(src[expert_id], non_blocking=True)
+        copied += 1
+    return copied
 
 
 @dataclass
@@ -156,6 +199,7 @@ class PrefetchOffloader(BaseOffloader):
 
         # Module offloaders and buffer pool (populated in wrap_modules/post_init)
         self.module_offloaders: list[_ModuleOffloader] = []
+        self._pecs_layer_bindings: dict[str, _PecsLayerBinding] = {}
         self.buffer_pool: StaticBufferPool | None = None
         self.total_offloaded_bytes = 0
 
@@ -190,20 +234,42 @@ class PrefetchOffloader(BaseOffloader):
                     continue  # skip layers with no matching params
 
                 offload_modules.append(module)
-                self.module_offloaders.append(
-                    _ModuleOffloader(
-                        mode=self.mode,
-                        module=module,
-                        copy_stream=self.copy_stream,
-                        whitelist_param_names=whitelist,
-                        layer_idx=len(self.module_offloaders),
-                    )
+                module_offloader = _ModuleOffloader(
+                    mode=self.mode,
+                    module=module,
+                    copy_stream=self.copy_stream,
+                    whitelist_param_names=whitelist,
+                    layer_idx=len(self.module_offloaders),
                 )
+                self.module_offloaders.append(module_offloader)
+                self._register_pecs_layers(module_offloader, module)
 
         for index, module in enumerate(offload_modules):
             self._hook_module_forward(index, module)
 
         return all_modules
+
+    def _register_pecs_layers(
+        self,
+        module_offloader: "_ModuleOffloader",
+        module: nn.Module,
+    ) -> None:
+        for submodule_name, submodule in module.named_modules():
+            layer_name = getattr(submodule, "layer_name", None)
+            local_num_experts = getattr(submodule, "local_num_experts", None)
+            mapper = getattr(submodule, "_map_global_expert_id_to_local_expert_id", None)
+            if not isinstance(layer_name, str) or local_num_experts is None or not callable(
+                mapper
+            ):
+                continue
+
+            param_prefix = submodule_name
+            self._pecs_layer_bindings[layer_name] = _PecsLayerBinding(
+                layer_name=layer_name,
+                param_prefix=param_prefix,
+                module_offloader=module_offloader,
+                moe_layer=submodule,
+            )
 
     def _hook_module_forward(self, index: int, module: nn.Module):
         """Hook module's forward with torch.compile-compatible sync."""
@@ -284,6 +350,44 @@ class PrefetchOffloader(BaseOffloader):
         """Called by custom op - start async copy to static buffer."""
         offloader = self.module_offloaders[layer_idx]
         offloader.start_onload_to_static()
+
+    def prefetch_experts(
+        self,
+        layer_name: str,
+        expert_ids: tuple[int, ...],
+        *,
+        physical_expert_ids: tuple[int, ...] | None = None,
+        num_tokens: int | None = None,
+    ) -> None:
+        del num_tokens  # The current implementation only stages weights.
+
+        binding = self._pecs_layer_bindings.get(layer_name)
+        if binding is None:
+            return
+
+        requested_expert_ids = physical_expert_ids or expert_ids
+        local_expert_ids = _normalize_expert_ids(
+            tuple(
+                binding.moe_layer._map_global_expert_id_to_local_expert_id(expert_id)
+                for expert_id in requested_expert_ids
+            ),
+            num_experts=int(binding.moe_layer.local_num_experts),
+        )
+        if not local_expert_ids:
+            return
+
+        copied_params = binding.module_offloader.stage_expert_slices(
+            param_prefix=binding.param_prefix,
+            local_expert_ids=local_expert_ids,
+            num_experts=int(binding.moe_layer.local_num_experts),
+        )
+        if copied_params:
+            logger.debug(
+                "PECS staged %d local expert(s) across %d param(s) for %s",
+                len(local_expert_ids),
+                copied_params,
+                layer_name,
+            )
 
     def join_after_forward(self):
         """Join copy_stream after model forward completes.
@@ -498,6 +602,33 @@ class _ModuleOffloader:
                 slot_idx=slot_idx,
             )
             offloader.assign_static_buffer(buffer)
+
+    def stage_expert_slices(
+        self,
+        *,
+        param_prefix: str,
+        local_expert_ids: tuple[int, ...],
+        num_experts: int,
+    ) -> int:
+        copied_params = 0
+        prefix = f"{param_prefix}." if param_prefix else ""
+        for name, offloader in self._param_offloaders.items():
+            if prefix:
+                if not name.startswith(prefix):
+                    continue
+            elif "." in name:
+                continue
+
+            cpu_storage = offloader._cpu_storage
+            gpu_buffer = offloader._gpu_buffer
+            if cpu_storage is None or gpu_buffer is None:
+                continue
+            if cpu_storage.ndim == 0 or cpu_storage.shape[0] != num_experts:
+                continue
+
+            _copy_selected_expert_slices(cpu_storage, gpu_buffer, local_expert_ids)
+            copied_params += 1
+        return copied_params
 
     def start_onload_to_static(self):
         """Start async copy from CPU storage to GPU buffer.

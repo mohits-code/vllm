@@ -209,6 +209,13 @@ builtin_platform_plugins = {
     "cpu": cpu_platform_plugin,
 }
 
+_ENV_PLATFORM_FALLBACKS = {
+    "cuda": "vllm.platforms.cuda.CudaPlatform",
+    "cpu": "vllm.platforms.cpu.CpuPlatform",
+    "xpu": "vllm.platforms.xpu.XPUPlatform",
+    "tpu": "vllm.platforms.tpu.TpuPlatform",
+}
+
 
 def resolve_current_platform_cls_qualname() -> str:
     platform_plugins = load_plugins_by_group(PLATFORM_PLUGINS_GROUP)
@@ -248,8 +255,16 @@ def resolve_current_platform_cls_qualname() -> str:
             "Automatically detected platform %s.", activated_builtin_plugins[0]
         )
     else:
-        platform_cls_qualname = "vllm.platforms.interface.UnspecifiedPlatform"
-        logger.debug("No platform detected, vLLM is running on UnspecifiedPlatform")
+        target_device = (envs.VLLM_TARGET_DEVICE or "").strip().lower()
+        if target_device in _ENV_PLATFORM_FALLBACKS:
+            platform_cls_qualname = _ENV_PLATFORM_FALLBACKS[target_device]
+            logger.info(
+                "No platform auto-detected; falling back to VLLM_TARGET_DEVICE=%s.",
+                target_device,
+            )
+        else:
+            platform_cls_qualname = "vllm.platforms.interface.UnspecifiedPlatform"
+            logger.debug("No platform detected, vLLM is running on UnspecifiedPlatform")
     return platform_cls_qualname
 
 

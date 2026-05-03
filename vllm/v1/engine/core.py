@@ -784,6 +784,11 @@ class EngineCore:
             "proposal_exact_matches",
             "combined_queries",
             "combined_hits",
+            "prefetch_requests",
+            "confirmed_candidate_experts",
+            "proposal_candidate_experts",
+            "combined_candidate_experts",
+            "combined_physical_candidate_experts",
         )
 
         for rank_stats in worker_stats:
@@ -798,6 +803,11 @@ class EngineCore:
                         "proposal_exact_matches": 0,
                         "combined_queries": 0,
                         "combined_hits": 0,
+                        "prefetch_requests": 0,
+                        "confirmed_candidate_experts": 0,
+                        "proposal_candidate_experts": 0,
+                        "combined_candidate_experts": 0,
+                        "combined_physical_candidate_experts": 0,
                         "flushes": 0,
                         "predictor_enabled": False,
                         "predictor_load_failures": 0,
@@ -826,6 +836,11 @@ class EngineCore:
             "proposal_exact_matches": 0,
             "combined_queries": 0,
             "combined_hits": 0,
+            "prefetch_requests": 0,
+            "confirmed_candidate_experts": 0,
+            "proposal_candidate_experts": 0,
+            "combined_candidate_experts": 0,
+            "combined_physical_candidate_experts": 0,
         }
 
         for layer_id, acc in sorted(layer_accumulators.items()):
@@ -855,6 +870,26 @@ class EngineCore:
                 ),
                 "combined_hit_rate": (
                     acc["combined_hits"] / combined_queries if combined_queries else 0.0
+                ),
+                "avg_confirmed_candidates": (
+                    acc["confirmed_candidate_experts"] / acc["prefetch_requests"]
+                    if acc["prefetch_requests"]
+                    else 0.0
+                ),
+                "avg_proposal_candidates": (
+                    acc["proposal_candidate_experts"] / acc["prefetch_requests"]
+                    if acc["prefetch_requests"]
+                    else 0.0
+                ),
+                "avg_combined_candidates": (
+                    acc["combined_candidate_experts"] / acc["prefetch_requests"]
+                    if acc["prefetch_requests"]
+                    else 0.0
+                ),
+                "avg_combined_physical_candidates": (
+                    acc["combined_physical_candidate_experts"] / acc["prefetch_requests"]
+                    if acc["prefetch_requests"]
+                    else 0.0
                 ),
             }
 
@@ -886,6 +921,27 @@ class EngineCore:
                 "combined_hit_rate": (
                     aggregate["combined_hits"] / combined_queries
                     if combined_queries
+                    else 0.0
+                ),
+                "avg_confirmed_candidates": (
+                    aggregate["confirmed_candidate_experts"] / aggregate["prefetch_requests"]
+                    if aggregate["prefetch_requests"]
+                    else 0.0
+                ),
+                "avg_proposal_candidates": (
+                    aggregate["proposal_candidate_experts"] / aggregate["prefetch_requests"]
+                    if aggregate["prefetch_requests"]
+                    else 0.0
+                ),
+                "avg_combined_candidates": (
+                    aggregate["combined_candidate_experts"] / aggregate["prefetch_requests"]
+                    if aggregate["prefetch_requests"]
+                    else 0.0
+                ),
+                "avg_combined_physical_candidates": (
+                    aggregate["combined_physical_candidate_experts"]
+                    / aggregate["prefetch_requests"]
+                    if aggregate["prefetch_requests"]
                     else 0.0
                 ),
             },

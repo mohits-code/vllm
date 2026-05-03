@@ -80,6 +80,18 @@ class FrozenMLPPredictor(nn.Module):
         return self.net(hidden_states)
 
 
+@dataclass(frozen=True)
+class PecsPrefetchPlan:
+    layer_name: str
+    layer_id: int | None
+    num_tokens: int
+    confirmed_experts: tuple[int, ...]
+    proposal_experts: tuple[int, ...]
+    combined_experts: tuple[int, ...]
+    combined_physical_experts: tuple[int, ...]
+    proposal_ids: torch.Tensor | None = None
+
+
 @dataclass
 class PecsLayerStats:
     flushes: int = 0
@@ -96,11 +108,24 @@ class PecsLayerStats:
     combined_queries: int = 0
     combined_hits: int = 0
 
+    prefetch_requests: int = 0
+    confirmed_candidate_experts: int = 0
+    proposal_candidate_experts: int = 0
+    combined_candidate_experts: int = 0
+    combined_physical_candidate_experts: int = 0
+
     flush_reasons: dict[str, int] = field(default_factory=dict)
 
     def mark_flush(self, reason: str) -> None:
         self.flushes += 1
         self.flush_reasons[reason] = self.flush_reasons.get(reason, 0) + 1
+
+    def mark_prefetch(self, plan: PecsPrefetchPlan) -> None:
+        self.prefetch_requests += 1
+        self.confirmed_candidate_experts += len(plan.confirmed_experts)
+        self.proposal_candidate_experts += len(plan.proposal_experts)
+        self.combined_candidate_experts += len(plan.combined_experts)
+        self.combined_physical_candidate_experts += len(plan.combined_physical_experts)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -134,6 +159,31 @@ class PecsLayerStats:
                 if self.combined_queries
                 else 0.0
             ),
+            "prefetch_requests": self.prefetch_requests,
+            "confirmed_candidate_experts": self.confirmed_candidate_experts,
+            "proposal_candidate_experts": self.proposal_candidate_experts,
+            "combined_candidate_experts": self.combined_candidate_experts,
+            "combined_physical_candidate_experts": self.combined_physical_candidate_experts,
+            "avg_confirmed_candidates": (
+                self.confirmed_candidate_experts / self.prefetch_requests
+                if self.prefetch_requests
+                else 0.0
+            ),
+            "avg_proposal_candidates": (
+                self.proposal_candidate_experts / self.prefetch_requests
+                if self.prefetch_requests
+                else 0.0
+            ),
+            "avg_combined_candidates": (
+                self.combined_candidate_experts / self.prefetch_requests
+                if self.prefetch_requests
+                else 0.0
+            ),
+            "avg_combined_physical_candidates": (
+                self.combined_physical_candidate_experts / self.prefetch_requests
+                if self.prefetch_requests
+                else 0.0
+            ),
             "flush_reasons": dict(self.flush_reasons),
         }
 
@@ -164,6 +214,7 @@ class PecsLayerRuntime:
         self._predictor_loaded = False
         self._pending_proposals: torch.Tensor | None = None
         self._pending_confirmed_snapshot: tuple[int, ...] = ()
+        self._logical_to_physical_map: torch.Tensor | None = None
 
     @property
     def predictor_available(self) -> bool:
@@ -178,6 +229,9 @@ class PecsLayerRuntime:
     def on_eplb_map_update(self, logical_to_physical_map: torch.Tensor | None) -> None:
         if not self.enabled or logical_to_physical_map is None:
             return
+        self._logical_to_physical_map = logical_to_physical_map.detach().to(
+            dtype=torch.int32, device="cpu"
+        )
         signature = tuple(int(x) for x in logical_to_physical_map.reshape(-1).tolist())
         if self._last_map_signature is None:
             self._last_map_signature = signature
@@ -239,7 +293,55 @@ class PecsLayerRuntime:
             os.fspath(checkpoint_path),
         )
 
-    def pre_route(self, hidden_states: torch.Tensor) -> torch.Tensor | None:
+    @staticmethod
+    def _rank_proposal_experts(proposals: torch.Tensor | None) -> tuple[int, ...]:
+        if proposals is None or proposals.numel() == 0:
+            return ()
+
+        flat_ids = proposals.reshape(-1).to(device="cpu", dtype=torch.int64)
+        unique_ids, counts = torch.unique(flat_ids, return_counts=True, sorted=True)
+        ranked = sorted(
+            zip(unique_ids.tolist(), counts.tolist(), strict=True),
+            key=lambda item: (-item[1], item[0]),
+        )
+        return tuple(int(expert_id) for expert_id, _ in ranked)
+
+    @staticmethod
+    def _merge_candidates(
+        confirmed_experts: tuple[int, ...], proposal_experts: tuple[int, ...]
+    ) -> tuple[int, ...]:
+        ordered: list[int] = []
+        seen: set[int] = set()
+        for expert_id in (*confirmed_experts, *proposal_experts):
+            if expert_id in seen:
+                continue
+            ordered.append(expert_id)
+            seen.add(expert_id)
+        return tuple(ordered)
+
+    def _map_logical_candidates_to_physical(
+        self, logical_experts: tuple[int, ...]
+    ) -> tuple[int, ...]:
+        if not logical_experts:
+            return ()
+        if self._logical_to_physical_map is None:
+            return logical_experts
+
+        physical_ordered: list[int] = []
+        seen: set[int] = set()
+        for logical_expert in logical_experts:
+            if logical_expert < 0 or logical_expert >= self._logical_to_physical_map.shape[0]:
+                continue
+            mapped = self._logical_to_physical_map[logical_expert].reshape(-1).tolist()
+            for physical_expert in mapped:
+                expert_id = int(physical_expert)
+                if expert_id < 0 or expert_id in seen:
+                    continue
+                physical_ordered.append(expert_id)
+                seen.add(expert_id)
+        return tuple(physical_ordered)
+
+    def pre_route(self, hidden_states: torch.Tensor) -> PecsPrefetchPlan | None:
         if not self.enabled:
             return None
 
@@ -248,7 +350,20 @@ class PecsLayerRuntime:
 
         if self._predictor is None:
             self._pending_proposals = None
-            return None
+            proposal_experts: tuple[int, ...] = ()
+            combined_experts = self._pending_confirmed_snapshot
+            return PecsPrefetchPlan(
+                layer_name=self.layer_name,
+                layer_id=self.layer_id,
+                num_tokens=int(hidden_states.shape[0]),
+                confirmed_experts=self._pending_confirmed_snapshot,
+                proposal_experts=proposal_experts,
+                combined_experts=combined_experts,
+                combined_physical_experts=self._map_logical_candidates_to_physical(
+                    combined_experts
+                ),
+                proposal_ids=None,
+            )
 
         with torch.inference_mode():
             predictor_param = next(self._predictor.parameters())
@@ -259,7 +374,22 @@ class PecsLayerRuntime:
             self._pending_proposals = torch.topk(
                 logits, k=min(self.top_k, logits.shape[-1]), dim=-1
             ).indices.to(device=hidden_states.device, dtype=torch.int32)
-        return self._pending_proposals
+        proposal_experts = self._rank_proposal_experts(self._pending_proposals)
+        combined_experts = self._merge_candidates(
+            self._pending_confirmed_snapshot, proposal_experts
+        )
+        return PecsPrefetchPlan(
+            layer_name=self.layer_name,
+            layer_id=self.layer_id,
+            num_tokens=int(hidden_states.shape[0]),
+            confirmed_experts=self._pending_confirmed_snapshot,
+            proposal_experts=proposal_experts,
+            combined_experts=combined_experts,
+            combined_physical_experts=self._map_logical_candidates_to_physical(
+                combined_experts
+            ),
+            proposal_ids=self._pending_proposals,
+        )
 
     @staticmethod
     def _has_overlap(actual: torch.Tensor, predicted: torch.Tensor | tuple[int, ...]) -> torch.Tensor:
@@ -313,6 +443,10 @@ class PecsLayerRuntime:
 
     def get_confirmed_experts(self) -> tuple[int, ...]:
         return tuple(self._confirmed_cache)
+
+    def mark_prefetch(self, plan: PecsPrefetchPlan) -> None:
+        if self.enabled:
+            self.stats.mark_prefetch(plan)
 
     def snapshot(self) -> dict[str, object]:
         snapshot = self.stats.as_dict()

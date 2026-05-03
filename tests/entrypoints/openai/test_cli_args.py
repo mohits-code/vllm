@@ -64,6 +64,25 @@ def test_config_arg_parsing(serve_parser, cli_config_file):
     assert args.port == 9000
 
 
+def test_pecs_flags_parse(serve_parser):
+    args = serve_parser.parse_args(
+        [
+            "--enable-pecs",
+            "--pecs-predictor-path",
+            "/tmp/pecs-checkpoints",
+            "--pecs-confirmed-capacity",
+            "3",
+            "--pecs-predictor-dtype",
+            "float16",
+        ]
+    )
+
+    assert args.enable_pecs is True
+    assert args.pecs_predictor_path == "/tmp/pecs-checkpoints"
+    assert args.pecs_confirmed_capacity == 3
+    assert args.pecs_predictor_dtype == "float16"
+
+
 ### Tests for LoRA module parsing
 def test_valid_key_value_format(serve_parser):
     # Test old format: name=path

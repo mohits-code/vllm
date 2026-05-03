@@ -7,6 +7,7 @@ from typing import Any, Literal
 import torch
 from pydantic import ConfigDict, SkipValidation
 
+from vllm import envs
 from vllm.config.utils import config
 from vllm.utils.hashing import safe_hash
 
@@ -53,11 +54,15 @@ class DeviceConfig:
 
             self.device_type = current_platform.device_type
             if not self.device_type:
-                raise RuntimeError(
-                    "Failed to infer device type, please set "
-                    "the environment variable `VLLM_LOGGING_LEVEL=DEBUG` "
-                    "to turn on verbose logging to help debug the issue."
-                )
+                fallback_device = (envs.VLLM_TARGET_DEVICE or "").strip().lower()
+                if fallback_device and fallback_device != "auto":
+                    self.device_type = fallback_device
+                else:
+                    raise RuntimeError(
+                        "Failed to infer device type, please set "
+                        "the environment variable `VLLM_LOGGING_LEVEL=DEBUG` "
+                        "to turn on verbose logging to help debug the issue."
+                    )
         else:
             # Device type is assigned explicitly
             if isinstance(self.device, str):

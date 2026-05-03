@@ -64,6 +64,47 @@ elif sys.platform.startswith("linux") and os.getenv("VLLM_TARGET_DEVICE") is Non
         VLLM_TARGET_DEVICE = "cpu"
 
 
+def get_visible_cuda_arch() -> tuple[str, str] | None:
+    if not torch.cuda.is_available():
+        return None
+
+    major, minor = torch.cuda.get_device_capability(0)
+    return f"{major}.{minor}", f"{major}{minor}"
+
+
+def get_preferred_cuda_home() -> str | None:
+    if not _is_cuda():
+        return CUDA_HOME
+
+    preferred_cuda_home = Path("/usr/local/cuda")
+    preferred_nvcc = preferred_cuda_home / "bin" / "nvcc"
+    if preferred_nvcc.exists():
+        if CUDA_HOME is None:
+            return str(preferred_cuda_home)
+        resolved_cuda_home = Path(CUDA_HOME).resolve()
+        if resolved_cuda_home == Path("/usr").resolve():
+            return str(preferred_cuda_home)
+
+    return CUDA_HOME
+
+
+def maybe_set_torch_cuda_arch_list() -> None:
+    if VLLM_TARGET_DEVICE != "cuda":
+        return
+    if os.getenv("TORCH_CUDA_ARCH_LIST"):
+        return
+    visible_arch = get_visible_cuda_arch()
+    if visible_arch is None:
+        return
+
+    arch, _ = visible_arch
+    os.environ["TORCH_CUDA_ARCH_LIST"] = arch
+    logger.info("Setting TORCH_CUDA_ARCH_LIST=%s from visible CUDA device.", arch)
+
+
+maybe_set_torch_cuda_arch_list()
+
+
 def is_sccache_available() -> bool:
     return which("sccache") is not None and not bool(
         int(os.getenv("VLLM_DISABLE_SCCACHE", "0"))
@@ -215,6 +256,11 @@ class cmake_build_ext(build_ext):
             "-DVLLM_TARGET_DEVICE={}".format(VLLM_TARGET_DEVICE),
         ]
 
+        visible_cuda_arch = get_visible_cuda_arch() if _is_cuda() else None
+        if visible_cuda_arch is not None:
+            _, cmake_cuda_arch = visible_cuda_arch
+            cmake_args += [f"-DCMAKE_CUDA_ARCHITECTURES={cmake_cuda_arch}"]
+
         verbose = envs.VERBOSE
         if verbose:
             cmake_args += ["-DCMAKE_VERBOSE_MAKEFILE=ON"]
@@ -268,8 +314,9 @@ class cmake_build_ext(build_ext):
             # Default build tool to whatever cmake picks.
             build_tool = []
         # Make sure we use the nvcc from CUDA_HOME
-        if _is_cuda() and CUDA_HOME is not None:
-            cmake_args += [f"-DCMAKE_CUDA_COMPILER={CUDA_HOME}/bin/nvcc"]
+        preferred_cuda_home = get_preferred_cuda_home()
+        if _is_cuda() and preferred_cuda_home is not None:
+            cmake_args += [f"-DCMAKE_CUDA_COMPILER={preferred_cuda_home}/bin/nvcc"]
         elif _is_hip() and ROCM_HOME is not None:
             cmake_args += [f"-DROCM_PATH={ROCM_HOME}"]
 

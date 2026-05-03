@@ -92,6 +92,22 @@ class BaseOffloader(ABC):
         """Start layer prefetch. Override in subclasses."""
         pass
 
+    def prefetch_experts(
+        self,
+        layer_name: str,
+        expert_ids: tuple[int, ...],
+        *,
+        physical_expert_ids: tuple[int, ...] | None = None,
+        num_tokens: int | None = None,
+    ) -> None:  # noqa: B027
+        """Optional hook for PECS-driven expert prefetch/staging.
+
+        Offloaders that understand MoE expert residency can override this
+        method. The default implementation is a no-op so existing backends keep
+        their current behavior.
+        """
+        pass
+
 
 class NoopOffloader(BaseOffloader):
     """No-op offloader that returns modules as-is without any offloading."""

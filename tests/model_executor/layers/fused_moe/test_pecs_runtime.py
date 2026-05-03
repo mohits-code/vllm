@@ -51,9 +51,14 @@ def test_pecs_runtime_loads_predictor_and_tracks_hits(tmp_path: Path) -> None:
     )
 
     hidden_states = torch.randn(2, 4)
-    proposals = pecs.pre_route(hidden_states)
-    assert proposals is not None
-    assert tuple(proposals.shape) == (2, 2)
+    plan = pecs.pre_route(hidden_states)
+    assert plan is not None
+    assert plan.proposal_ids is not None
+    assert tuple(plan.proposal_ids.shape) == (2, 2)
+    assert plan.proposal_experts == (0, 1)
+    assert plan.combined_experts == (0, 1)
+    assert plan.combined_physical_experts == (0, 1)
+    pecs.mark_prefetch(plan)
 
     actual = torch.tensor([[0, 1], [0, 1]], dtype=torch.int32)
     pecs.post_route(actual)
@@ -63,6 +68,8 @@ def test_pecs_runtime_loads_predictor_and_tracks_hits(tmp_path: Path) -> None:
     assert stats["proposal_hits"] == 2
     assert stats["proposal_exact_matches"] == 2
     assert stats["combined_hits"] == 2
+    assert stats["prefetch_requests"] == 1
+    assert stats["avg_combined_candidates"] == 2.0
     assert stats["confirmed_experts"] == [1, 0]
 
 
@@ -91,3 +98,24 @@ def test_pecs_runtime_flushes_on_eplb_remap(tmp_path: Path) -> None:
     assert stats["flushes"] == 1
     assert stats["flush_reasons"] == {"eplb_rebalance": 1}
     assert pecs.get_confirmed_experts() == ()
+
+
+def test_pecs_runtime_maps_combined_candidates_through_eplb(tmp_path: Path) -> None:
+    _write_checkpoint(tmp_path)
+
+    pecs = PecsLayerRuntime(
+        enabled=True,
+        layer_name="model.layers.0.block_sparse_moe",
+        top_k=2,
+        confirmed_capacity=2,
+        predictor_path=str(tmp_path),
+        predictor_dtype="float32",
+    )
+
+    initial_map = torch.tensor([[4, 5], [1, 3], [2, 0]], dtype=torch.int32)
+    pecs.on_eplb_map_update(initial_map)
+
+    plan = pecs.pre_route(torch.randn(1, 4))
+    assert plan is not None
+    assert plan.proposal_experts == (0, 1)
+    assert plan.combined_physical_experts == (4, 5, 1, 3)

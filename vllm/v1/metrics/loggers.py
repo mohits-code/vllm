@@ -153,6 +153,7 @@ class LoggingStatLogger(StatLoggerBase):
             "PECS proposal hit: %.1f%%",
             "PECS proposal exact: %.1f%%",
             "PECS combined hit: %.1f%%",
+            "PECS avg candidates: %.2f logical / %.2f physical",
             "PECS flushes: %d",
         ]
         log_args: list[int | float | str] = [
@@ -160,6 +161,8 @@ class LoggingStatLogger(StatLoggerBase):
             float(aggregate.get("proposal_hit_rate", 0.0)) * 100,
             float(aggregate.get("proposal_exact_rate", 0.0)) * 100,
             float(aggregate.get("combined_hit_rate", 0.0)) * 100,
+            float(aggregate.get("avg_combined_candidates", 0.0)),
+            float(aggregate.get("avg_combined_physical_candidates", 0.0)),
             int(pecs_stats.get("flushes", 0)),
         ]
         predictor_failures = int(pecs_stats.get("predictor_load_failures", 0))
@@ -373,6 +376,11 @@ class AggregatedLoggingStatLogger(LoggingStatLogger, AggregateStatLoggerBase):
             "proposal_exact_matches": 0,
             "combined_queries": 0,
             "combined_hits": 0,
+            "prefetch_requests": 0,
+            "confirmed_candidate_experts": 0,
+            "proposal_candidate_experts": 0,
+            "combined_candidate_experts": 0,
+            "combined_physical_candidate_experts": 0,
         }
         pecs_enabled = False
         pecs_flushes = 0
@@ -434,6 +442,30 @@ class AggregatedLoggingStatLogger(LoggingStatLogger, AggregateStatLoggerBase):
                     "combined_hit_rate": (
                         pecs_aggregate["combined_hits"] / combined_queries
                         if combined_queries
+                        else 0.0
+                    ),
+                    "avg_confirmed_candidates": (
+                        pecs_aggregate["confirmed_candidate_experts"]
+                        / pecs_aggregate["prefetch_requests"]
+                        if pecs_aggregate["prefetch_requests"]
+                        else 0.0
+                    ),
+                    "avg_proposal_candidates": (
+                        pecs_aggregate["proposal_candidate_experts"]
+                        / pecs_aggregate["prefetch_requests"]
+                        if pecs_aggregate["prefetch_requests"]
+                        else 0.0
+                    ),
+                    "avg_combined_candidates": (
+                        pecs_aggregate["combined_candidate_experts"]
+                        / pecs_aggregate["prefetch_requests"]
+                        if pecs_aggregate["prefetch_requests"]
+                        else 0.0
+                    ),
+                    "avg_combined_physical_candidates": (
+                        pecs_aggregate["combined_physical_candidate_experts"]
+                        / pecs_aggregate["prefetch_requests"]
+                        if pecs_aggregate["prefetch_requests"]
                         else 0.0
                     ),
                 },

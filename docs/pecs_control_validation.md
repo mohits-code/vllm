@@ -2,12 +2,15 @@
 
 This branch exposes PECS control-path state in normal vLLM scheduler logs.
 
-The current integration is for control-path validation, not TPOT claims:
+The current integration is for runtime validation, not final TPOT claims:
 - frozen per-layer predictor inference is live
 - confirmed/proposed cache state is live
 - EPLB-triggered PECS flushes are live
+- PECS candidate sets are forwarded through a runtime prefetch/staging hook
 - scheduler logs now print aggregate PECS rates
-- expert prefetch/staging is **not** yet wired into the kernel/transport path
+- the Python prefetch offloader now stages selected expert slices when PECS is
+  active
+- low-level kernels and transport overlap are still the next optimization step
 
 ## Logged PECS fields
 
@@ -17,6 +20,7 @@ When `--enable-pecs` is active and stats logging is enabled, vLLM logs:
 - `PECS proposal hit`
 - `PECS proposal exact`
 - `PECS combined hit`
+- `PECS avg candidates`
 - `PECS flushes`
 - `PECS predictor load failures` (only if non-zero)
 
@@ -70,4 +74,11 @@ scripts/run_pecs_control_case.sh pecs_eplb
 - `flushes` increases when EPLB is active and experts remap.
 - predictor load failures stay at zero.
 
-If these checks look sane, the next step is the lower-level dispatch/prefetch path for TPOT experiments.
+If these checks look sane, the next step is measuring whether the staged expert
+path materially changes TPOT under the serving modes you care about.
+
+For the hardened remote bring-up and workload matrix flow, see
+[docs/pecs_cluster_runbook.md](pecs_cluster_runbook.md).
+
+For the smallest useful first paid runtime session on Vast.ai, see
+[docs/pecs_vast_first_test.md](pecs_vast_first_test.md).

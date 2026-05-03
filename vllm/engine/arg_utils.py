@@ -1591,7 +1591,8 @@ class EngineArgs:
         """
         current_platform.pre_register_and_update()
 
-        device_config = DeviceConfig(device=cast(Device, current_platform.device_type))
+        detected_device_type = cast(Device, current_platform.device_type or "auto")
+        device_config = DeviceConfig(device=detected_device_type)
 
         envs.validate_environ(self.fail_on_environ_validation)
 
