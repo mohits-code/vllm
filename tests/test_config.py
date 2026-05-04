@@ -33,6 +33,7 @@ from vllm.config.utils import get_field
 from vllm.config.vllm import (
     OPTIMIZATION_LEVEL_TO_CONFIG,
     OptimizationLevel,
+    PECS_PREFETCH_SPLIT_OP,
 )
 from vllm.platforms import current_platform
 
@@ -1169,6 +1170,45 @@ def test_vllm_config_explicit_overrides():
     )
     # Explicit override should be respected
     assert config.compilation_config.pass_config.eliminate_noops is False
+
+
+@pytest.mark.skipif(
+    not current_platform.support_static_graph_mode(),
+    reason="PECS cudagraph guard is only relevant when static graphs are supported.",
+)
+def test_enable_pecs_forces_piecewise_cudagraph_and_split_op():
+    regular_model = ModelConfig("Qwen/Qwen1.5-7B")
+    compilation_config = CompilationConfig(
+        mode=CompilationMode.VLLM_COMPILE,
+        cudagraph_mode=CUDAGraphMode.FULL_AND_PIECEWISE,
+    )
+    parallel_config = ParallelConfig(
+        enable_pecs=True,
+        pecs_predictor_path="/tmp/pecs-checkpoints",
+    )
+
+    config = VllmConfig(
+        model_config=regular_model,
+        parallel_config=parallel_config,
+        compilation_config=compilation_config,
+    )
+
+    assert config.compilation_config.cudagraph_mode == CUDAGraphMode.PIECEWISE
+    assert config.compilation_config.splitting_ops is not None
+    assert PECS_PREFETCH_SPLIT_OP in config.compilation_config.splitting_ops
+
+    no_compile_config = VllmConfig(
+        model_config=regular_model,
+        parallel_config=parallel_config,
+        compilation_config=CompilationConfig(
+            mode=CompilationMode.NONE,
+            cudagraph_mode=CUDAGraphMode.FULL,
+        ),
+    )
+
+    assert no_compile_config.compilation_config.cudagraph_mode == CUDAGraphMode.NONE
+    assert no_compile_config.compilation_config.splitting_ops is not None
+    assert PECS_PREFETCH_SPLIT_OP in no_compile_config.compilation_config.splitting_ops
     # Other fields should still use defaults
     assert config.compilation_config.mode == CompilationMode.VLLM_COMPILE
     assert config.compilation_config.cudagraph_mode == CUDAGraphMode.FULL_AND_PIECEWISE

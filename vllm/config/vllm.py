@@ -63,6 +63,7 @@ else:
     KVCacheConfig = Any
 
 logger = init_logger(__name__)
+PECS_PREFETCH_SPLIT_OP = "vllm::pecs_prefetch_experts"
 
 
 class OptimizationLevel(IntEnum):
@@ -1158,6 +1159,7 @@ class VllmConfig:
             all2all_backend=self.parallel_config.all2all_backend,
             data_parallel_size=effective_dp_size,
         )
+        self._apply_pecs_compilation_guards()
 
         if self.compilation_config.pass_config.enable_sp:
             # With pipeline parallelism or dynamo partitioning,
@@ -1684,6 +1686,30 @@ class VllmConfig:
         compilation_config.compile_ranges_endpoints = sorted(
             computed_compile_ranges_endpoints
         )
+
+    def _apply_pecs_compilation_guards(self) -> None:
+        if not self.parallel_config.enable_pecs:
+            return
+
+        splitting_ops = self.compilation_config.splitting_ops
+        if splitting_ops is None:
+            splitting_ops = []
+            self.compilation_config.splitting_ops = splitting_ops
+        if PECS_PREFETCH_SPLIT_OP not in splitting_ops:
+            splitting_ops.append(PECS_PREFETCH_SPLIT_OP)
+
+        if self.compilation_config.cudagraph_mode.has_full_cudagraphs():
+            guarded_mode = (
+                CUDAGraphMode.PIECEWISE
+                if self.compilation_config.mode == CompilationMode.VLLM_COMPILE
+                else CUDAGraphMode.NONE
+            )
+            logger.warning_once(
+                "PECS uses dynamic per-batch expert selection and is incompatible "
+                "with full CUDA graph replay. Forcing cudagraph_mode=%s.",
+                guarded_mode.name,
+            )
+            self.compilation_config.cudagraph_mode = guarded_mode
 
     def try_verify_and_update_config(self):
         if self.model_config is None:

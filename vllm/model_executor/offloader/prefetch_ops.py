@@ -69,6 +69,39 @@ def _start_prefetch_fake(
     return
 
 
+def _pecs_prefetch_experts_impl(
+    input_tensor: torch.Tensor,
+    logical_expert_ids: torch.Tensor,
+    physical_expert_ids: torch.Tensor,
+    layer_name: str,
+    num_tokens: int,
+) -> None:
+    """Stage PECS-selected experts with explicit ordering semantics.
+
+    The mutated input_tensor argument prevents the compiler from reordering
+    this staging op ahead of the computation that produced the hidden states
+    used by PECS selection.
+    """
+    del input_tensor
+    get_offloader().prefetch_experts(
+        layer_name,
+        logical_expert_ids,
+        physical_expert_ids=physical_expert_ids,
+        num_tokens=int(num_tokens),
+    )
+
+
+def _pecs_prefetch_experts_fake(
+    input_tensor: torch.Tensor,
+    logical_expert_ids: torch.Tensor,
+    physical_expert_ids: torch.Tensor,
+    layer_name: str,
+    num_tokens: int,
+) -> None:
+    del input_tensor, logical_expert_ids, physical_expert_ids, layer_name, num_tokens
+    return
+
+
 def register_prefetch_offloader_ops() -> None:
     """Register custom ops for prefetch offloader.
 
@@ -87,6 +120,13 @@ def register_prefetch_offloader_ops() -> None:
         op_func=_start_prefetch_impl,
         mutates_args=["output_tensor"],
         fake_impl=_start_prefetch_fake,
+    )
+
+    direct_register_custom_op(
+        op_name="pecs_prefetch_experts",
+        op_func=_pecs_prefetch_experts_impl,
+        mutates_args=["input_tensor"],
+        fake_impl=_pecs_prefetch_experts_fake,
     )
 
 

@@ -533,6 +533,10 @@ class MoERunnerBase(MoERunner):
         if self.gate is not None:
             router_logits, _ = self.gate(hidden_states)
 
+        maybe_stage_pecs_prefetch = getattr(layer, "maybe_stage_pecs_prefetch", None)
+        if callable(maybe_stage_pecs_prefetch):
+            maybe_stage_pecs_prefetch(hidden_states)
+
         with self._sequence_parallel_context():
             return self._forward_impl(
                 layer,

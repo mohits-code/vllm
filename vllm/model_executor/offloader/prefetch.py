@@ -56,6 +56,25 @@ def _normalize_expert_ids(
     return tuple(ordered)
 
 
+def _normalize_expert_id_tensor(
+    expert_ids: torch.Tensor,
+    *,
+    num_experts: int,
+) -> torch.Tensor:
+    ids = expert_ids.to(dtype=torch.int64).reshape(-1)
+    if ids.numel() == 0:
+        return ids
+
+    valid = (ids >= 0) & (ids < num_experts)
+    ids = ids[valid]
+    if ids.numel() == 0:
+        return ids
+
+    eq = ids.unsqueeze(0) == ids.unsqueeze(1)
+    seen_before = torch.triu(eq, diagonal=1).any(dim=0)
+    return ids[~seen_before]
+
+
 def _copy_selected_expert_slices(
     src: torch.Tensor,
     dst: torch.Tensor,
@@ -66,6 +85,24 @@ def _copy_selected_expert_slices(
         dst[expert_id].copy_(src[expert_id], non_blocking=True)
         copied += 1
     return copied
+
+
+def _copy_selected_expert_slices_tensor(
+    src: torch.Tensor,
+    dst: torch.Tensor,
+    expert_ids: torch.Tensor,
+) -> int:
+    ids = _normalize_expert_id_tensor(expert_ids, num_experts=src.shape[0])
+    if ids.numel() == 0:
+        return 0
+
+    # Keep the selection tensor on CPU for the source gather and use a device-side
+    # copy for the destination write to avoid synchronizing CUDA tensors to Python.
+    dst[ids.to(device=dst.device, dtype=torch.long)].copy_(
+        src[ids.to(device=src.device, dtype=torch.long)],
+        non_blocking=True,
+    )
+    return int(ids.numel())
 
 
 @dataclass
@@ -354,9 +391,9 @@ class PrefetchOffloader(BaseOffloader):
     def prefetch_experts(
         self,
         layer_name: str,
-        expert_ids: tuple[int, ...],
+        expert_ids: tuple[int, ...] | torch.Tensor,
         *,
-        physical_expert_ids: tuple[int, ...] | None = None,
+        physical_expert_ids: tuple[int, ...] | torch.Tensor | None = None,
         num_tokens: int | None = None,
     ) -> None:
         del num_tokens  # The current implementation only stages weights.
@@ -365,16 +402,40 @@ class PrefetchOffloader(BaseOffloader):
         if binding is None:
             return
 
-        requested_expert_ids = physical_expert_ids or expert_ids
-        local_expert_ids = _normalize_expert_ids(
-            tuple(
-                binding.moe_layer._map_global_expert_id_to_local_expert_id(expert_id)
-                for expert_id in requested_expert_ids
-            ),
-            num_experts=int(binding.moe_layer.local_num_experts),
+        requested_expert_ids = (
+            physical_expert_ids if physical_expert_ids is not None else expert_ids
         )
-        if not local_expert_ids:
-            return
+        if isinstance(requested_expert_ids, torch.Tensor):
+            if binding.moe_layer.expert_map is None:
+                local_expert_ids: tuple[int, ...] | torch.Tensor = (
+                    _normalize_expert_id_tensor(
+                        requested_expert_ids,
+                        num_experts=int(binding.moe_layer.local_num_experts),
+                    )
+                )
+            else:
+                expert_map = binding.moe_layer.expert_map.to(
+                    device=requested_expert_ids.device
+                )
+                local_expert_ids = expert_map[
+                    requested_expert_ids.to(dtype=torch.long).reshape(-1)
+                ]
+                local_expert_ids = _normalize_expert_id_tensor(
+                    local_expert_ids,
+                    num_experts=int(binding.moe_layer.local_num_experts),
+                )
+            if local_expert_ids.numel() == 0:
+                return
+        else:
+            local_expert_ids = _normalize_expert_ids(
+                tuple(
+                    binding.moe_layer._map_global_expert_id_to_local_expert_id(expert_id)
+                    for expert_id in requested_expert_ids
+                ),
+                num_experts=int(binding.moe_layer.local_num_experts),
+            )
+            if not local_expert_ids:
+                return
 
         copied_params = binding.module_offloader.stage_expert_slices(
             param_prefix=binding.param_prefix,
@@ -607,7 +668,7 @@ class _ModuleOffloader:
         self,
         *,
         param_prefix: str,
-        local_expert_ids: tuple[int, ...],
+        local_expert_ids: tuple[int, ...] | torch.Tensor,
         num_experts: int,
     ) -> int:
         copied_params = 0
@@ -626,7 +687,18 @@ class _ModuleOffloader:
             if cpu_storage.ndim == 0 or cpu_storage.shape[0] != num_experts:
                 continue
 
-            _copy_selected_expert_slices(cpu_storage, gpu_buffer, local_expert_ids)
+            if isinstance(local_expert_ids, torch.Tensor):
+                _copy_selected_expert_slices_tensor(
+                    cpu_storage,
+                    gpu_buffer,
+                    local_expert_ids,
+                )
+            else:
+                _copy_selected_expert_slices(
+                    cpu_storage,
+                    gpu_buffer,
+                    local_expert_ids,
+                )
             copied_params += 1
         return copied_params
 

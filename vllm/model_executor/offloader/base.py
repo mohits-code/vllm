@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Generator
 from typing import TYPE_CHECKING
 
+import torch
 import torch.nn as nn
 
 import vllm.envs as envs
@@ -95,9 +96,9 @@ class BaseOffloader(ABC):
     def prefetch_experts(
         self,
         layer_name: str,
-        expert_ids: tuple[int, ...],
+        expert_ids: tuple[int, ...] | torch.Tensor,
         *,
-        physical_expert_ids: tuple[int, ...] | None = None,
+        physical_expert_ids: tuple[int, ...] | torch.Tensor | None = None,
         num_tokens: int | None = None,
     ) -> None:  # noqa: B027
         """Optional hook for PECS-driven expert prefetch/staging.

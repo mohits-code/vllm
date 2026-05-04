@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
-import pytest
 import torch
+from torch.library import opcheck
 
 from vllm.model_executor.layers.fused_moe.pecs import (
     FrozenMLPPredictor,
     PecsLayerRuntime,
 )
+from vllm.model_executor.layers.fused_moe.runner.moe_runner_base import MoERunnerBase
+from vllm.model_executor.offloader.base import BaseOffloader, get_offloader, set_offloader
 
 
 def _write_checkpoint(checkpoint_dir: Path, layer_id: int = 0) -> None:
@@ -52,23 +56,62 @@ def _build_runtime(checkpoint_dir: Path) -> PecsLayerRuntime:
     return pecs
 
 
-def test_pecs_runtime_loads_predictor_and_tracks_hits(tmp_path: Path) -> None:
+class _RecordingOffloader(BaseOffloader):
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def wrap_modules(self, modules_generator):
+        return list(modules_generator)
+
+    def prefetch_experts(
+        self,
+        layer_name: str,
+        expert_ids: tuple[int, ...] | torch.Tensor,
+        *,
+        physical_expert_ids: tuple[int, ...] | torch.Tensor | None = None,
+        num_tokens: int | None = None,
+    ) -> None:
+        if isinstance(expert_ids, torch.Tensor):
+            expert_ids = tuple(int(x) for x in expert_ids.reshape(-1).tolist())
+        if isinstance(physical_expert_ids, torch.Tensor):
+            physical_expert_ids = tuple(
+                int(x) for x in physical_expert_ids.reshape(-1).tolist()
+            )
+        self.calls.append(
+            {
+                "layer_name": layer_name,
+                "expert_ids": expert_ids,
+                "physical_expert_ids": physical_expert_ids,
+                "num_tokens": num_tokens,
+            }
+        )
+
+
+def test_pecs_runtime_stages_prefetch_and_tracks_hits(tmp_path: Path) -> None:
     _write_checkpoint(tmp_path)
 
     pecs = _build_runtime(tmp_path)
+    recording_offloader = _RecordingOffloader()
+    original_offloader = get_offloader()
+    set_offloader(recording_offloader)
+    try:
+        hidden_states = torch.randn(2, 4)
+        pecs.stage_prefetch(hidden_states)
 
-    hidden_states = torch.randn(2, 4)
-    plan = pecs.pre_route(hidden_states)
-    assert plan is not None
-    assert plan.proposal_ids is not None
-    assert tuple(plan.proposal_ids.shape) == (2, 2)
-    assert plan.proposal_experts == (0, 1)
-    assert plan.combined_experts == (0, 1)
-    assert plan.combined_physical_experts == (0, 1)
-    pecs.mark_prefetch(plan)
+        assert recording_offloader.calls == [
+            {
+                "layer_name": "model.layers.0.block_sparse_moe",
+                "expert_ids": (0, 1),
+                "physical_expert_ids": (0, 1),
+                "num_tokens": 2,
+            }
+        ]
 
-    actual = torch.tensor([[0, 1], [0, 1]], dtype=torch.int32)
-    pecs.post_route(actual)
+        actual = torch.tensor([[0, 1], [0, 1]], dtype=torch.int32)
+        pecs.capture(actual)
+    finally:
+        set_offloader(original_offloader)
+
     stats = pecs.snapshot()
     assert stats["predictor_available"] is True
     assert stats["proposal_queries"] == 2
@@ -85,8 +128,8 @@ def test_pecs_runtime_flushes_on_eplb_remap(tmp_path: Path) -> None:
 
     pecs = _build_runtime(tmp_path)
 
-    pecs.pre_route(torch.randn(1, 4))
-    pecs.post_route(torch.tensor([[0, 1]], dtype=torch.int32))
+    pecs.stage_prefetch(torch.randn(1, 4))
+    pecs.capture(torch.tensor([[0, 1]], dtype=torch.int32))
     assert pecs.get_confirmed_experts() == (1, 0)
 
     initial_map = torch.tensor([[0, 1, 2]], dtype=torch.int32)
@@ -104,35 +147,102 @@ def test_pecs_runtime_maps_combined_candidates_through_eplb(tmp_path: Path) -> N
     _write_checkpoint(tmp_path)
 
     pecs = _build_runtime(tmp_path)
+    recording_offloader = _RecordingOffloader()
+    original_offloader = get_offloader()
+    set_offloader(recording_offloader)
+    try:
+        initial_map = torch.tensor([[4, 5], [1, 3], [2, 0]], dtype=torch.int32)
+        pecs.on_eplb_map_update(initial_map)
 
-    initial_map = torch.tensor([[4, 5], [1, 3], [2, 0]], dtype=torch.int32)
-    pecs.on_eplb_map_update(initial_map)
+        pecs.stage_prefetch(torch.randn(1, 4))
+    finally:
+        set_offloader(original_offloader)
 
-    plan = pecs.pre_route(torch.randn(1, 4))
-    assert plan is not None
-    assert plan.proposal_experts == (0, 1)
-    assert plan.combined_physical_experts == (4, 5, 1, 3)
+    assert recording_offloader.calls == [
+        {
+            "layer_name": "model.layers.0.block_sparse_moe",
+            "expert_ids": (0, 1),
+            "physical_expert_ids": (4, 5, 1, 3),
+            "num_tokens": 1,
+        }
+    ]
 
 
-@pytest.mark.skipif(not hasattr(torch, "compile"), reason="torch.compile unavailable")
-def test_pecs_runtime_can_run_behind_compiled_wrapper(tmp_path: Path) -> None:
-    _write_checkpoint(tmp_path)
+def test_forward_dispatch_invokes_runner_integrated_pecs_hook() -> None:
+    class _DummyRouter:
+        pass
 
-    pecs = _build_runtime(tmp_path)
+    class _DummyRunner(MoERunnerBase):
+        def __init__(self) -> None:
+            super().__init__(
+                layer_name="model.layers.0.block_sparse_moe",
+                moe_config=SimpleNamespace(sp_size=1),
+                router=_DummyRouter(),
+                routed_input_transform=None,
+                gate=None,
+                shared_experts=None,
+                quant_method=SimpleNamespace(moe_kernel=None),
+                reduce_results=False,
+                enable_dbo=False,
+            )
+            self.forward_entry = None
 
-    class _Wrapper(torch.nn.Module):
-        def __init__(self, runtime: PecsLayerRuntime) -> None:
+        @property
+        def reduce_results(self) -> bool:
+            return False
+
+        def _sequence_parallel_context(self):
+            return nullcontext()
+
+        def _forward_impl(
+            self,
+            layer: torch.nn.Module,
+            hidden_states: torch.Tensor,
+            router_logits: torch.Tensor,
+            shared_experts_input: torch.Tensor | None,
+        ) -> torch.Tensor:
+            return hidden_states
+
+    class _DummyLayer(torch.nn.Module):
+        def __init__(self) -> None:
             super().__init__()
-            self.runtime = runtime
+            self.prefetch_inputs: list[torch.Tensor] = []
 
-        def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-            plan = self.runtime.pre_route(hidden_states)
-            assert plan is not None
-            assert plan.proposal_ids is not None
-            return plan.proposal_ids.to(dtype=torch.float32)
+        def ensure_moe_quant_config_init(self) -> None:
+            return
 
-    wrapper = _Wrapper(pecs)
-    compiled = torch.compile(wrapper, backend="eager")
+        def maybe_stage_pecs_prefetch(self, hidden_states: torch.Tensor) -> None:
+            self.prefetch_inputs.append(hidden_states.clone())
 
-    proposal_ids = compiled(torch.randn(2, 4))
-    assert tuple(proposal_ids.shape) == (2, 2)
+    runner = _DummyRunner()
+    layer = _DummyLayer()
+    hidden_states = torch.randn(3, 4)
+    router_logits = torch.randn(3, 8)
+
+    output = runner.forward_dispatch(
+        layer,
+        hidden_states,
+        router_logits,
+        shared_experts_input=None,
+    )
+
+    assert torch.equal(output, hidden_states)
+    assert len(layer.prefetch_inputs) == 1
+    assert torch.equal(layer.prefetch_inputs[0], hidden_states)
+
+
+def test_pecs_prefetch_custom_op_opcheck() -> None:
+    hidden_states = torch.randn(2, 4)
+    logical_expert_ids = torch.tensor([0, 1], dtype=torch.int32)
+    physical_expert_ids = torch.tensor([0, 1], dtype=torch.int32)
+
+    opcheck(
+        torch.ops.vllm.pecs_prefetch_experts,
+        (
+            hidden_states,
+            logical_expert_ids,
+            physical_expert_ids,
+            "model.layers.0.block_sparse_moe",
+            2,
+        ),
+    )

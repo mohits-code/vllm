@@ -48,7 +48,6 @@ from vllm.model_executor.layers.fused_moe.runner.shared_experts import (
 from vllm.model_executor.layers.fused_moe.unquantized_fused_moe_method import (
     UnquantizedFusedMoEMethod,
 )
-from vllm.model_executor.offloader import get_offloader
 from vllm.model_executor.layers.fused_moe.utils import (
     disable_inplace,
 )
@@ -1552,22 +1551,16 @@ class FusedMoE(PluggableLayer):
         hidden_states: torch.Tensor,
         router_logits: torch.Tensor,
     ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        prefetch_plan = self.pecs.pre_route(hidden_states)
-        if prefetch_plan is not None and prefetch_plan.combined_experts:
-            get_offloader().prefetch_experts(
-                self.layer_name,
-                prefetch_plan.combined_experts,
-                physical_expert_ids=prefetch_plan.combined_physical_experts,
-                num_tokens=prefetch_plan.num_tokens,
-            )
-            self.pecs.mark_prefetch(prefetch_plan)
         return self.runner.forward(
             hidden_states,
             router_logits,
         )
 
     def _capture_pecs_logical_ids(self, logical_ids: torch.Tensor) -> None:
-        self.pecs.post_route(logical_ids)
+        self.pecs.capture(logical_ids)
+
+    def maybe_stage_pecs_prefetch(self, hidden_states: torch.Tensor) -> None:
+        self.pecs.stage_prefetch(hidden_states)
 
     def get_pecs_stats(self) -> dict[str, object]:
         return self.pecs.snapshot()
