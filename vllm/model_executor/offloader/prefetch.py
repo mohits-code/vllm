@@ -87,24 +87,6 @@ def _copy_selected_expert_slices(
     return copied
 
 
-def _copy_selected_expert_slices_tensor(
-    src: torch.Tensor,
-    dst: torch.Tensor,
-    expert_ids: torch.Tensor,
-) -> int:
-    ids = _normalize_expert_id_tensor(expert_ids, num_experts=src.shape[0])
-    if ids.numel() == 0:
-        return 0
-
-    # Keep the selection tensor on CPU for the source gather and use a device-side
-    # copy for the destination write to avoid synchronizing CUDA tensors to Python.
-    dst[ids.to(device=dst.device, dtype=torch.long)].copy_(
-        src[ids.to(device=src.device, dtype=torch.long)],
-        non_blocking=True,
-    )
-    return int(ids.numel())
-
-
 @dataclass
 class ParamInfo:
     """Metadata about an offloaded parameter."""
@@ -407,25 +389,29 @@ class PrefetchOffloader(BaseOffloader):
         )
         if isinstance(requested_expert_ids, torch.Tensor):
             if binding.moe_layer.expert_map is None:
-                local_expert_ids: tuple[int, ...] | torch.Tensor = (
-                    _normalize_expert_id_tensor(
-                        requested_expert_ids,
-                        num_experts=int(binding.moe_layer.local_num_experts),
-                    )
+                local_expert_ids_tensor = _normalize_expert_id_tensor(
+                    requested_expert_ids,
+                    num_experts=int(binding.moe_layer.local_num_experts),
                 )
             else:
                 expert_map = binding.moe_layer.expert_map.to(
                     device=requested_expert_ids.device
                 )
-                local_expert_ids = expert_map[
+                local_expert_ids_tensor = expert_map[
                     requested_expert_ids.to(dtype=torch.long).reshape(-1)
                 ]
-                local_expert_ids = _normalize_expert_id_tensor(
-                    local_expert_ids,
+                local_expert_ids_tensor = _normalize_expert_id_tensor(
+                    local_expert_ids_tensor,
                     num_experts=int(binding.moe_layer.local_num_experts),
                 )
-            if local_expert_ids.numel() == 0:
+            if local_expert_ids_tensor.numel() == 0:
                 return
+            local_expert_ids = tuple(
+                int(expert_id)
+                for expert_id in local_expert_ids_tensor.to(
+                    device="cpu", dtype=torch.int64
+                ).tolist()
+            )
         else:
             local_expert_ids = _normalize_expert_ids(
                 tuple(
@@ -687,18 +673,11 @@ class _ModuleOffloader:
             if cpu_storage.ndim == 0 or cpu_storage.shape[0] != num_experts:
                 continue
 
-            if isinstance(local_expert_ids, torch.Tensor):
-                _copy_selected_expert_slices_tensor(
-                    cpu_storage,
-                    gpu_buffer,
-                    local_expert_ids,
-                )
-            else:
-                _copy_selected_expert_slices(
-                    cpu_storage,
-                    gpu_buffer,
-                    local_expert_ids,
-                )
+            _copy_selected_expert_slices(
+                cpu_storage,
+                gpu_buffer,
+                local_expert_ids,
+            )
             copied_params += 1
         return copied_params
 
