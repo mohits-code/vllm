@@ -1176,7 +1176,7 @@ def test_vllm_config_explicit_overrides():
     not current_platform.support_static_graph_mode(),
     reason="PECS cudagraph guard is only relevant when static graphs are supported.",
 )
-def test_enable_pecs_forces_piecewise_cudagraph_and_split_op():
+def test_enable_pecs_disables_cudagraph_and_adds_split_op():
     regular_model = ModelConfig("Qwen/Qwen1.5-7B")
     compilation_config = CompilationConfig(
         mode=CompilationMode.VLLM_COMPILE,
@@ -1193,7 +1193,7 @@ def test_enable_pecs_forces_piecewise_cudagraph_and_split_op():
         compilation_config=compilation_config,
     )
 
-    assert config.compilation_config.cudagraph_mode == CUDAGraphMode.PIECEWISE
+    assert config.compilation_config.cudagraph_mode == CUDAGraphMode.NONE
     assert config.compilation_config.splitting_ops is not None
     assert PECS_PREFETCH_SPLIT_OP in config.compilation_config.splitting_ops
 
@@ -1211,7 +1211,6 @@ def test_enable_pecs_forces_piecewise_cudagraph_and_split_op():
     assert PECS_PREFETCH_SPLIT_OP in no_compile_config.compilation_config.splitting_ops
     # Other fields should still use defaults
     assert config.compilation_config.mode == CompilationMode.VLLM_COMPILE
-    assert config.compilation_config.cudagraph_mode == CUDAGraphMode.FULL_AND_PIECEWISE
 
 
 def test_fusion_pass_op_priority():

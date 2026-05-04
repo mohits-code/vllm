@@ -1698,15 +1698,11 @@ class VllmConfig:
         if PECS_PREFETCH_SPLIT_OP not in splitting_ops:
             splitting_ops.append(PECS_PREFETCH_SPLIT_OP)
 
-        if self.compilation_config.cudagraph_mode.has_full_cudagraphs():
-            guarded_mode = (
-                CUDAGraphMode.PIECEWISE
-                if self.compilation_config.mode == CompilationMode.VLLM_COMPILE
-                else CUDAGraphMode.NONE
-            )
+        if self.compilation_config.cudagraph_mode.has_mode(CUDAGraphMode.PIECEWISE):
+            guarded_mode = CUDAGraphMode.NONE
             logger.warning_once(
                 "PECS uses dynamic per-batch expert selection and is incompatible "
-                "with full CUDA graph replay. Forcing cudagraph_mode=%s.",
+                "with CUDA graph replay. Forcing cudagraph_mode=%s.",
                 guarded_mode.name,
             )
             self.compilation_config.cudagraph_mode = guarded_mode
