@@ -12,6 +12,7 @@ from torch.library import opcheck
 from vllm.model_executor.layers.fused_moe.pecs import (
     FrozenMLPPredictor,
     PecsLayerRuntime,
+    disable_pecs_runtime,
 )
 from vllm.model_executor.layers.fused_moe.runner.moe_runner_base import MoERunnerBase
 from vllm.model_executor.offloader.base import BaseOffloader, get_offloader, set_offloader
@@ -121,6 +122,31 @@ def test_pecs_runtime_stages_prefetch_and_tracks_hits(tmp_path: Path) -> None:
     assert stats["prefetch_requests"] == 1
     assert stats["avg_combined_candidates"] == 2.0
     assert stats["confirmed_experts"] == [1, 0]
+
+
+def test_pecs_runtime_disabled_context_skips_prefetch_and_capture(
+    tmp_path: Path,
+) -> None:
+    _write_checkpoint(tmp_path)
+
+    pecs = _build_runtime(tmp_path)
+    recording_offloader = _RecordingOffloader()
+    original_offloader = get_offloader()
+    set_offloader(recording_offloader)
+    try:
+        hidden_states = torch.randn(2, 4)
+        with disable_pecs_runtime():
+            pecs.stage_prefetch(hidden_states)
+            pecs.capture(torch.tensor([[0, 1], [0, 1]], dtype=torch.int32))
+    finally:
+        set_offloader(original_offloader)
+
+    assert recording_offloader.calls == []
+    stats = pecs.snapshot()
+    assert stats["proposal_queries"] == 0
+    assert stats["confirmed_queries"] == 0
+    assert stats["prefetch_requests"] == 0
+    assert stats["confirmed_experts"] == []
 
 
 def test_pecs_runtime_flushes_on_eplb_remap(tmp_path: Path) -> None:

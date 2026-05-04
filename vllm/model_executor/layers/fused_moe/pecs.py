@@ -20,6 +20,8 @@ import re
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Literal
 
 import torch
@@ -32,6 +34,18 @@ from vllm.model_executor.offloader.base import get_offloader
 logger = init_logger(__name__)
 
 PecsPredictorDType = Literal["auto", "float32", "float16", "bfloat16"]
+_PECS_RUNTIME_ENABLED: ContextVar[bool] = ContextVar(
+    "pecs_runtime_enabled", default=True
+)
+
+
+@contextmanager
+def disable_pecs_runtime() -> object:
+    token = _PECS_RUNTIME_ENABLED.set(False)
+    try:
+        yield
+    finally:
+        _PECS_RUNTIME_ENABLED.reset(token)
 
 
 def _resolve_dtype(dtype_name: PecsPredictorDType, fallback: torch.dtype) -> torch.dtype:
@@ -484,6 +498,16 @@ class PecsLayerRuntime:
     def stage_prefetch(self, hidden_states: torch.Tensor) -> None:
         if not self.enabled:
             return
+        if not _PECS_RUNTIME_ENABLED.get():
+            self._pending_proposals = None
+            self._pending_confirmed_tensor = None
+            self._pending_confirmed_snapshot = tuple(self._confirmed_cache)
+            return
+        if hidden_states.device.type == "cuda" and torch.cuda.is_current_stream_capturing():
+            self._pending_proposals = None
+            self._pending_confirmed_tensor = None
+            self._pending_confirmed_snapshot = tuple(self._confirmed_cache)
+            return
 
         self._maybe_load_predictor(hidden_states)
         if hidden_states.device.type == "cuda":
@@ -606,6 +630,11 @@ class PecsLayerRuntime:
 
     def capture(self, logical_ids: torch.Tensor) -> None:
         if not self.enabled:
+            return
+        if not _PECS_RUNTIME_ENABLED.get():
+            self._pending_proposals = None
+            self._pending_confirmed_tensor = None
+            self._pending_confirmed_snapshot = tuple(self._confirmed_cache)
             return
 
         actual = logical_ids.to(dtype=torch.int32)
