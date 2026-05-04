@@ -232,9 +232,10 @@ def test_forward_dispatch_invokes_runner_integrated_pecs_hook() -> None:
 
 
 def test_pecs_prefetch_custom_op_opcheck() -> None:
-    hidden_states = torch.randn(2, 4)
-    logical_expert_ids = torch.tensor([0, 1], dtype=torch.int32)
-    physical_expert_ids = torch.tensor([0, 1], dtype=torch.int32)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    hidden_states = torch.randn(2, 4, device=device)
+    logical_expert_ids = torch.tensor([0, 1], device=device, dtype=torch.int32)
+    physical_expert_ids = torch.tensor([0, 1], device=device, dtype=torch.int32)
 
     opcheck(
         torch.ops.vllm.pecs_prefetch_experts,
