@@ -18,10 +18,10 @@ from __future__ import annotations
 import os
 import re
 from collections import deque
-from dataclasses import dataclass, field
-from pathlib import Path
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 
 import torch
@@ -48,7 +48,9 @@ def disable_pecs_runtime() -> object:
         _PECS_RUNTIME_ENABLED.reset(token)
 
 
-def _resolve_dtype(dtype_name: PecsPredictorDType, fallback: torch.dtype) -> torch.dtype:
+def _resolve_dtype(
+    dtype_name: PecsPredictorDType, fallback: torch.dtype
+) -> torch.dtype:
     if dtype_name == "auto":
         return fallback
     if dtype_name == "float32":
@@ -245,6 +247,7 @@ class PecsLayerRuntime:
         self._pending_confirmed_snapshot: tuple[int, ...] = ()
         self._pending_confirmed_tensor: torch.Tensor | None = None
         self._logical_to_physical_map: torch.Tensor | None = None
+        self._gpu_logical_to_physical_map: torch.Tensor | None = None
         self._confirmed_cache_tensor: torch.Tensor | None = None
         self._confirmed_hits_tensor: torch.Tensor | None = None
         self._proposal_hits_tensor: torch.Tensor | None = None
@@ -268,8 +271,13 @@ class PecsLayerRuntime:
     def on_eplb_map_update(self, logical_to_physical_map: torch.Tensor | None) -> None:
         if not self.enabled or logical_to_physical_map is None:
             return
-        self._logical_to_physical_map = logical_to_physical_map.detach().to(
-            dtype=torch.int32, device="cpu"
+        self._logical_to_physical_map = (
+            logical_to_physical_map.detach()
+            .to(dtype=torch.int32, device="cpu")
+            .pin_memory()
+        )
+        self._gpu_logical_to_physical_map = self._logical_to_physical_map.to(
+            device="cuda"
         )
         signature = tuple(int(x) for x in logical_to_physical_map.reshape(-1).tolist())
         if self._last_map_signature is None:
@@ -328,7 +336,9 @@ class PecsLayerRuntime:
                 "compiled forward execution."
             )
 
-    def prepare_predictor(self, *, device: torch.device, fallback_dtype: torch.dtype) -> None:
+    def prepare_predictor(
+        self, *, device: torch.device, fallback_dtype: torch.dtype
+    ) -> None:
         if not self.enabled or self._predictor_loaded:
             return
 
@@ -356,7 +366,7 @@ class PecsLayerRuntime:
         if proposals is None or proposals.numel() == 0:
             return ()
 
-        flat_ids = proposals.reshape(-1).to(device="cpu", dtype=torch.int64)
+        flat_ids = proposals.reshape(-1).cpu().to(dtype=torch.int64)
         unique_ids, counts = torch.unique(flat_ids, return_counts=True, sorted=True)
         ranked = sorted(
             zip(unique_ids.tolist(), counts.tolist(), strict=True),
@@ -370,13 +380,9 @@ class PecsLayerRuntime:
         *,
         device: torch.device,
     ) -> torch.Tensor:
-        if proposals is None or proposals.numel() == 0:
+        if proposals is None:
             return torch.empty(0, device=device, dtype=torch.int32)
-
-        flat_ids = proposals.reshape(-1).to(device=device, dtype=torch.int64)
-        unique_ids, counts = torch.unique(flat_ids, return_counts=True, sorted=True)
-        order = torch.argsort(counts, descending=True, stable=True)
-        return unique_ids[order].to(dtype=torch.int32)
+        return proposals.flatten().to(dtype=torch.int32)
 
     @staticmethod
     def _merge_candidates(
@@ -402,7 +408,10 @@ class PecsLayerRuntime:
         physical_ordered: list[int] = []
         seen: set[int] = set()
         for logical_expert in logical_experts:
-            if logical_expert < 0 or logical_expert >= self._logical_to_physical_map.shape[0]:
+            if (
+                logical_expert < 0
+                or logical_expert >= self._logical_to_physical_map.shape[0]
+            ):
                 continue
             mapped = self._logical_to_physical_map[logical_expert].reshape(-1).tolist()
             for physical_expert in mapped:
@@ -443,12 +452,18 @@ class PecsLayerRuntime:
         device: torch.device,
     ) -> torch.Tensor:
         if not confirmed_experts:
-            return torch.empty(0, device=device, dtype=torch.int32)
-        return torch.tensor(confirmed_experts, device=device, dtype=torch.int32)
+            res = torch.empty(0, device="cpu", dtype=torch.int32)
+        else:
+            res = torch.tensor(confirmed_experts, device="cpu", dtype=torch.int32)
+        if device.type == "cuda":
+            res = res.pin_memory()
+        return res.to(device=device)
 
     def _get_confirmed_cache_tensor(self, *, device: torch.device) -> torch.Tensor:
         if self._confirmed_cache_tensor is None:
-            return torch.empty(0, device=device, dtype=torch.int32)
+            return torch.full(
+                (self.confirmed_capacity,), -1, device=device, dtype=torch.int32
+            )
         return self._confirmed_cache_tensor.to(device=device, dtype=torch.int32)
 
     def _accumulate_tensor_counter(
@@ -477,7 +492,9 @@ class PecsLayerRuntime:
         if recent.numel() > 0:
             recent = _unique_preserve_order(recent.flip(0))
 
-        existing = self._get_confirmed_cache_tensor(device=actual.device).to(dtype=torch.int64)
+        existing = self._get_confirmed_cache_tensor(device=actual.device).to(
+            dtype=torch.int64
+        )
         if recent.numel() == 0:
             updated = existing
         elif existing.numel() == 0:
@@ -486,7 +503,21 @@ class PecsLayerRuntime:
             keep_existing = ~(existing.unsqueeze(1) == recent.unsqueeze(0)).any(dim=1)
             updated = torch.cat([recent, existing[keep_existing]], dim=0)
 
-        self._confirmed_cache_tensor = updated[: self.confirmed_capacity].to(dtype=torch.int32)
+        self._confirmed_cache_tensor = updated[: self.confirmed_capacity].to(
+            dtype=torch.int32
+        )
+        if self._confirmed_cache_tensor.numel() < self.confirmed_capacity:
+            pad = torch.full(
+                (self.confirmed_capacity - self._confirmed_cache_tensor.numel(),),
+                -1,
+                dtype=torch.int32,
+                device=self._confirmed_cache_tensor.device,
+            )
+            self._confirmed_cache_tensor = torch.cat(
+                [self._confirmed_cache_tensor, pad]
+            )
+        if self._confirmed_cache_tensor.device.type == "cpu":
+            self._confirmed_cache_tensor = self._confirmed_cache_tensor.pin_memory()
 
     @staticmethod
     def _merge_candidate_tensors(
@@ -514,12 +545,6 @@ class PecsLayerRuntime:
             self._pending_confirmed_tensor = None
             self._pending_confirmed_snapshot = tuple(self._confirmed_cache)
             return
-        if hidden_states.device.type == "cuda" and torch.cuda.is_current_stream_capturing():
-            self.stats.stage_capture_calls += 1
-            self._pending_proposals = None
-            self._pending_confirmed_tensor = None
-            self._pending_confirmed_snapshot = tuple(self._confirmed_cache)
-            return
 
         self._maybe_load_predictor(hidden_states)
         if hidden_states.device.type == "cuda":
@@ -538,8 +563,8 @@ class PecsLayerRuntime:
         if self._predictor is None:
             self._pending_proposals = None
             proposal_experts: tuple[int, ...] = ()
-            proposal_expert_tensor = torch.empty(
-                0, device=hidden_states.device, dtype=torch.int32
+            proposal_expert_tensor = torch.full(
+                (self.top_k,), -1, device=hidden_states.device, dtype=torch.int32
             )
         else:
             with torch.inference_mode():
@@ -565,38 +590,32 @@ class PecsLayerRuntime:
                     dtype=torch.int32,
                 )
 
-        if hidden_states.device.type == "cuda":
-            combined_expert_tensor = self._merge_candidate_tensors(
-                confirmed_expert_tensor,
-                proposal_expert_tensor,
-            )
-            combined_physical_expert_tensor = (
-                self._map_logical_candidates_to_physical_tensor(combined_expert_tensor)
-            )
-            if combined_expert_tensor.numel() == 0:
-                self.stats.stage_empty_candidate_calls += 1
-                return
-        else:
-            combined_experts = self._merge_candidates(
-                self._pending_confirmed_snapshot, proposal_experts
-            )
-            combined_physical_experts = self._map_logical_candidates_to_physical(
-                combined_experts
-            )
-            if not combined_experts:
-                self.stats.stage_empty_candidate_calls += 1
-                return
+        combined_expert_tensor = torch.cat(
+            [proposal_expert_tensor.flatten(), confirmed_expert_tensor.flatten()]
+        )
 
-            combined_expert_tensor = torch.tensor(
-                combined_experts,
-                device=hidden_states.device,
-                dtype=torch.int32,
+        l2p_gpu = getattr(self, "_gpu_logical_to_physical_map", None)
+        if l2p_gpu is not None:
+            l2p = l2p_gpu.to(hidden_states.device)
+            valid_mask = (combined_expert_tensor >= 0) & (
+                combined_expert_tensor < l2p.shape[0]
             )
-            combined_physical_expert_tensor = torch.tensor(
-                combined_physical_experts,
-                device=hidden_states.device,
-                dtype=torch.int32,
+            safe_logical = torch.where(
+                valid_mask,
+                combined_expert_tensor,
+                torch.zeros_like(combined_expert_tensor),
             )
+
+            phys_candidates = l2p[safe_logical.to(torch.int64)]
+            valid_mask_expanded = valid_mask.unsqueeze(-1).expand_as(phys_candidates)
+            phys_candidates = torch.where(
+                valid_mask_expanded,
+                phys_candidates,
+                torch.full((), -1, device=hidden_states.device, dtype=phys_candidates.dtype),
+            )
+            combined_physical_expert_tensor = phys_candidates.flatten().to(torch.int32)
+        else:
+            combined_physical_expert_tensor = combined_expert_tensor
 
         if hidden_states.device.type == "cuda":
             torch.ops.vllm.pecs_prefetch_experts(
@@ -609,19 +628,14 @@ class PecsLayerRuntime:
         else:
             get_offloader().prefetch_experts(
                 self.layer_name,
-                combined_experts,
-                physical_expert_ids=combined_physical_experts,
+                combined_expert_tensor,
+                physical_expert_ids=combined_physical_expert_tensor,
                 num_tokens=int(hidden_states.shape[0]),
             )
 
-        if hidden_states.device.type == "cuda":
-            num_proposal_experts = int(proposal_expert_tensor.numel())
-            num_combined_experts = int(combined_expert_tensor.numel())
-            num_combined_physical_experts = int(combined_physical_expert_tensor.numel())
-        else:
-            num_proposal_experts = len(proposal_experts)
-            num_combined_experts = len(combined_experts)
-            num_combined_physical_experts = len(combined_physical_experts)
+        num_proposal_experts = int(proposal_expert_tensor.numel())
+        num_combined_experts = int(combined_expert_tensor.numel())
+        num_combined_physical_experts = int(combined_physical_expert_tensor.numel())
 
         self.stats.mark_prefetch(
             num_confirmed_experts=int(confirmed_expert_tensor.numel()),
@@ -631,16 +645,22 @@ class PecsLayerRuntime:
         )
 
     @staticmethod
-    def _has_overlap(actual: torch.Tensor, predicted: torch.Tensor | tuple[int, ...]) -> torch.Tensor:
+    def _has_overlap(
+        actual: torch.Tensor, predicted: torch.Tensor | tuple[int, ...]
+    ) -> torch.Tensor:
         if isinstance(predicted, tuple):
             if not predicted:
-                return torch.zeros(actual.shape[0], device=actual.device, dtype=torch.bool)
+                return torch.zeros(
+                    actual.shape[0], device=actual.device, dtype=torch.bool
+                )
             predicted_tensor = torch.tensor(
                 predicted, device=actual.device, dtype=actual.dtype
             ).unsqueeze(0)
         else:
             predicted_tensor = predicted.to(device=actual.device, dtype=actual.dtype)
-        return (actual.unsqueeze(-1) == predicted_tensor.unsqueeze(-2)).any(dim=(-1, -2))
+        return (actual.unsqueeze(-1) == predicted_tensor.unsqueeze(-2)).any(
+            dim=(-1, -2)
+        )
 
     @torch.compiler.disable
     def capture(self, logical_ids: torch.Tensor) -> None:
@@ -750,8 +770,9 @@ class PecsLayerRuntime:
             if self.stats.proposal_queries
             else 0.0
         )
-        stats["proposal_exact_matches"] = self.stats.proposal_exact_matches + self._read_tensor_counter(
-            self._proposal_exact_matches_tensor
+        stats["proposal_exact_matches"] = (
+            self.stats.proposal_exact_matches
+            + self._read_tensor_counter(self._proposal_exact_matches_tensor)
         )
         stats["proposal_exact_match_rate"] = (
             stats["proposal_exact_matches"] / self.stats.proposal_queries
