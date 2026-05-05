@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
 from pathlib import Path
-from types import SimpleNamespace
 
 import torch
+import pytest
 from torch.library import opcheck
 
+import vllm.model_executor.layers.fused_moe.runner.moe_runner_base as moe_runner_base
 from vllm.model_executor.layers.fused_moe.pecs import (
     FrozenMLPPredictor,
     PecsLayerRuntime,
     disable_pecs_runtime,
 )
-from vllm.model_executor.layers.fused_moe.runner.moe_runner_base import MoERunnerBase
 from vllm.model_executor.offloader.base import BaseOffloader, get_offloader, set_offloader
 
 
@@ -194,65 +193,50 @@ def test_pecs_runtime_maps_combined_candidates_through_eplb(tmp_path: Path) -> N
     ]
 
 
-def test_forward_dispatch_invokes_runner_integrated_pecs_hook() -> None:
-    class _DummyRouter:
-        pass
-
-    class _DummyRunner(MoERunnerBase):
+def test_moe_forward_custom_op_invokes_layer_owned_pecs_hook(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _DummyRunner:
         def __init__(self) -> None:
-            super().__init__(
-                layer_name="model.layers.0.block_sparse_moe",
-                moe_config=SimpleNamespace(sp_size=1),
-                router=_DummyRouter(),
-                routed_input_transform=None,
-                gate=None,
-                shared_experts=None,
-                quant_method=SimpleNamespace(moe_kernel=None),
-                reduce_results=False,
-                enable_dbo=False,
-            )
-            self.forward_entry = None
+            self.calls = 0
 
-        @property
-        def reduce_results(self) -> bool:
-            return False
-
-        def _sequence_parallel_context(self):
-            return nullcontext()
-
-        def _forward_impl(
+        def forward_dispatch(
             self,
-            layer: torch.nn.Module,
+            layer: object,
             hidden_states: torch.Tensor,
             router_logits: torch.Tensor,
             shared_experts_input: torch.Tensor | None,
         ) -> torch.Tensor:
+            del layer, router_logits, shared_experts_input
+            self.calls += 1
             return hidden_states
 
-    class _DummyLayer(torch.nn.Module):
+    class _DummyLayer:
         def __init__(self) -> None:
-            super().__init__()
+            self.runner = _DummyRunner()
             self.prefetch_inputs: list[torch.Tensor] = []
-
-        def ensure_moe_quant_config_init(self) -> None:
-            return
 
         def maybe_stage_pecs_prefetch(self, hidden_states: torch.Tensor) -> None:
             self.prefetch_inputs.append(hidden_states.clone())
 
-    runner = _DummyRunner()
     layer = _DummyLayer()
+    monkeypatch.setattr(
+        moe_runner_base,
+        "get_layer_from_name",
+        lambda layer_name: layer,
+    )
     hidden_states = torch.randn(3, 4)
     router_logits = torch.randn(3, 8)
 
-    output = runner.forward_dispatch(
-        layer,
+    output = moe_runner_base._moe_forward(
         hidden_states,
         router_logits,
-        shared_experts_input=None,
+        None,
+        "model.layers.0.block_sparse_moe",
     )
 
     assert torch.equal(output, hidden_states)
+    assert layer.runner.calls == 1
     assert len(layer.prefetch_inputs) == 1
     assert torch.equal(layer.prefetch_inputs[0], hidden_states)
 

@@ -6855,8 +6855,16 @@ class GPUModelRunner(
         for module in self.compilation_config.static_forward_context.values():
             if isinstance(module, FusedMoE) and isinstance(module.router, BaseRouter):
                 layer_id = module.layer_id
+                previous_capture_fn = module.router.capture_fn
 
-                def _capture_fn(topk_ids, _layer_id=layer_id, _capturer=capturer):
+                def _capture_fn(
+                    topk_ids,
+                    _layer_id=layer_id,
+                    _capturer=capturer,
+                    _previous_capture_fn=previous_capture_fn,
+                ):
+                    if _previous_capture_fn is not None:
+                        _previous_capture_fn(topk_ids)
                     _capturer.capture(_layer_id, topk_ids)
 
                 module.router.set_capture_fn(_capture_fn)

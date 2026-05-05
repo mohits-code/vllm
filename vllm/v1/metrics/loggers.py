@@ -155,6 +155,8 @@ class LoggingStatLogger(StatLoggerBase):
             "PECS combined hit: %.1f%%",
             "PECS avg candidates: %.2f logical / %.2f physical",
             "PECS flushes: %d",
+            "PECS stage calls: %d",
+            "PECS stage disabled/capture/empty: %d/%d/%d",
         ]
         log_args: list[int | float | str] = [
             float(aggregate.get("confirmed_hit_rate", 0.0)) * 100,
@@ -164,6 +166,10 @@ class LoggingStatLogger(StatLoggerBase):
             float(aggregate.get("avg_combined_candidates", 0.0)),
             float(aggregate.get("avg_combined_physical_candidates", 0.0)),
             int(pecs_stats.get("flushes", 0)),
+            int(aggregate.get("stage_calls", 0)),
+            int(aggregate.get("stage_disabled_calls", 0)),
+            int(aggregate.get("stage_capture_calls", 0)),
+            int(aggregate.get("stage_empty_candidate_calls", 0)),
         ]
         predictor_failures = int(pecs_stats.get("predictor_load_failures", 0))
         if predictor_failures > 0:

@@ -591,6 +591,14 @@ class MixtralForCausalLM(nn.Module, SupportsLoRA, SupportsPP, MixtureOfExperts):
         logits = self.logits_processor(self.lm_head, hidden_states)
         return logits
 
+    def get_pecs_stats(self) -> dict[int, dict[str, object]]:
+        """Return per-layer PECS runtime stats for engine logging."""
+        return {
+            moe_layer_idx: moe_layer.get_pecs_stats()
+            for moe_layer_idx, moe_layer in enumerate(self.moe_layers)
+            if hasattr(moe_layer, "get_pecs_stats")
+        }
+
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         loader = AutoWeightsLoader(self)
         return loader.load_weights(weights)

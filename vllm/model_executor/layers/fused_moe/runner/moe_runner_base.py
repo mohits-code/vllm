@@ -89,6 +89,7 @@ def _moe_forward(
     layer_name: _layer_name_type,
 ) -> torch.Tensor:
     layer = get_layer_from_name(_resolve_layer_name(layer_name))
+    layer.maybe_stage_pecs_prefetch(hidden_states)
     return layer.runner.forward_dispatch(
         layer,
         hidden_states,
@@ -113,6 +114,7 @@ def _moe_forward_shared(
     layer_name: _layer_name_type,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     layer = get_layer_from_name(_resolve_layer_name(layer_name))
+    layer.maybe_stage_pecs_prefetch(hidden_states)
     return layer.runner.forward_dispatch(
         layer,
         hidden_states,
@@ -532,10 +534,6 @@ class MoERunnerBase(MoERunner):
         # NOTE: in future PR, MoE runner will always hold the gate.
         if self.gate is not None:
             router_logits, _ = self.gate(hidden_states)
-
-        maybe_stage_pecs_prefetch = getattr(layer, "maybe_stage_pecs_prefetch", None)
-        if callable(maybe_stage_pecs_prefetch):
-            maybe_stage_pecs_prefetch(hidden_states)
 
         with self._sequence_parallel_context():
             return self._forward_impl(

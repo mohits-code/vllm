@@ -122,6 +122,10 @@ class PecsLayerStats:
     combined_hits: int = 0
 
     prefetch_requests: int = 0
+    stage_calls: int = 0
+    stage_disabled_calls: int = 0
+    stage_capture_calls: int = 0
+    stage_empty_candidate_calls: int = 0
     confirmed_candidate_experts: int = 0
     proposal_candidate_experts: int = 0
     combined_candidate_experts: int = 0
@@ -180,6 +184,10 @@ class PecsLayerStats:
                 else 0.0
             ),
             "prefetch_requests": self.prefetch_requests,
+            "stage_calls": self.stage_calls,
+            "stage_disabled_calls": self.stage_disabled_calls,
+            "stage_capture_calls": self.stage_capture_calls,
+            "stage_empty_candidate_calls": self.stage_empty_candidate_calls,
             "confirmed_candidate_experts": self.confirmed_candidate_experts,
             "proposal_candidate_experts": self.proposal_candidate_experts,
             "combined_candidate_experts": self.combined_candidate_experts,
@@ -499,12 +507,15 @@ class PecsLayerRuntime:
     def stage_prefetch(self, hidden_states: torch.Tensor) -> None:
         if not self.enabled:
             return
+        self.stats.stage_calls += 1
         if not _PECS_RUNTIME_ENABLED.get():
+            self.stats.stage_disabled_calls += 1
             self._pending_proposals = None
             self._pending_confirmed_tensor = None
             self._pending_confirmed_snapshot = tuple(self._confirmed_cache)
             return
         if hidden_states.device.type == "cuda" and torch.cuda.is_current_stream_capturing():
+            self.stats.stage_capture_calls += 1
             self._pending_proposals = None
             self._pending_confirmed_tensor = None
             self._pending_confirmed_snapshot = tuple(self._confirmed_cache)
@@ -563,6 +574,7 @@ class PecsLayerRuntime:
                 self._map_logical_candidates_to_physical_tensor(combined_expert_tensor)
             )
             if combined_expert_tensor.numel() == 0:
+                self.stats.stage_empty_candidate_calls += 1
                 return
         else:
             combined_experts = self._merge_candidates(
@@ -572,6 +584,7 @@ class PecsLayerRuntime:
                 combined_experts
             )
             if not combined_experts:
+                self.stats.stage_empty_candidate_calls += 1
                 return
 
             combined_expert_tensor = torch.tensor(
