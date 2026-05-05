@@ -495,6 +495,7 @@ class PecsLayerRuntime:
         ).to(dtype=torch.int64)
         return _unique_preserve_order(merged).to(dtype=torch.int32)
 
+    @torch.compiler.disable
     def stage_prefetch(self, hidden_states: torch.Tensor) -> None:
         if not self.enabled:
             return
@@ -628,6 +629,7 @@ class PecsLayerRuntime:
             predicted_tensor = predicted.to(device=actual.device, dtype=actual.dtype)
         return (actual.unsqueeze(-1) == predicted_tensor.unsqueeze(-2)).any(dim=(-1, -2))
 
+    @torch.compiler.disable
     def capture(self, logical_ids: torch.Tensor) -> None:
         if not self.enabled:
             return
