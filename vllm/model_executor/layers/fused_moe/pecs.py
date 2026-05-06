@@ -382,7 +382,17 @@ class PecsLayerRuntime:
     ) -> torch.Tensor:
         if proposals is None:
             return torch.empty(0, device=device, dtype=torch.int32)
-        return proposals.flatten().to(dtype=torch.int32)
+
+        flat_ids = proposals.reshape(-1).to(device=device, dtype=torch.int64)
+        if flat_ids.numel() == 0:
+            return torch.empty(0, device=device, dtype=torch.int32)
+
+        unique_ids, counts = torch.unique(flat_ids, return_counts=True, sorted=True)
+        sort_keys = unique_ids.to(dtype=torch.int64) - counts.to(dtype=torch.int64) * (
+            unique_ids.numel() + 1
+        )
+        ranked_indices = torch.argsort(sort_keys, stable=True)
+        return unique_ids[ranked_indices].to(dtype=torch.int32)
 
     @staticmethod
     def _merge_candidates(

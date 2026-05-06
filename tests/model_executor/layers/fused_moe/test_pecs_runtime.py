@@ -193,6 +193,24 @@ def test_pecs_runtime_maps_combined_candidates_through_eplb(tmp_path: Path) -> N
     ]
 
 
+def test_rank_proposal_experts_tensor_deduplicates_batch_proposals() -> None:
+    proposals = torch.tensor(
+        [
+            [1, 0],
+            [1, 2],
+            [0, 1],
+        ],
+        dtype=torch.int32,
+    )
+
+    ranked = PecsLayerRuntime._rank_proposal_experts_tensor(
+        proposals,
+        device=torch.device("cpu"),
+    )
+
+    assert tuple(int(x) for x in ranked.tolist()) == (1, 0, 2)
+
+
 def test_moe_forward_custom_op_invokes_layer_owned_pecs_hook(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
