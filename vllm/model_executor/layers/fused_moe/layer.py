@@ -1557,11 +1557,9 @@ class FusedMoE(PluggableLayer):
             router_logits,
         )
 
-    @torch.compiler.disable
     def _capture_pecs_logical_ids(self, logical_ids: torch.Tensor) -> None:
         self.pecs.capture(logical_ids)
 
-    @torch.compiler.disable
     def maybe_stage_pecs_prefetch(self, hidden_states: torch.Tensor) -> None:
         self.pecs.stage_prefetch(hidden_states)
 

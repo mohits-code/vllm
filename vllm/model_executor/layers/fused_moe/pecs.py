@@ -554,23 +554,26 @@ class PecsLayerRuntime:
     _debug_stage_time_total: float = 0.0
     _debug_stage_time_calls: int = 0
 
-    @torch.compiler.disable
     def stage_prefetch(self, hidden_states: torch.Tensor) -> None:
         if not self.enabled:
             return
-        self.stats.stage_calls += 1
-        if not _PECS_RUNTIME_ENABLED.get():
-            self.stats.stage_disabled_calls += 1
-            self._pending_proposals = None
-            self._pending_confirmed_tensor = None
-            return
+            
+        is_compiling = torch.compiler.is_compiling()
+        
+        if not is_compiling:
+            self.stats.stage_calls += 1
+            if not _PECS_RUNTIME_ENABLED.get():
+                self.stats.stage_disabled_calls += 1
+                self._pending_proposals = None
+                self._pending_confirmed_tensor = None
+                return
 
-        # ── Diagnostic: skip everything, measure pure no-op overhead ─────────
-        if _PECS_DEBUG_NOOP_STAGE:
-            self.stats.stage_disabled_calls += 1
-            return
+            # ── Diagnostic: skip everything, measure pure no-op overhead ─────────
+            if _PECS_DEBUG_NOOP_STAGE:
+                self.stats.stage_disabled_calls += 1
+                return
 
-        _t0 = time.perf_counter() if _PECS_DEBUG_TIMING else 0.0
+        _t0 = time.perf_counter() if (not is_compiling and _PECS_DEBUG_TIMING) else 0.0
 
         self._maybe_load_predictor(hidden_states)
         dev = hidden_states.device
@@ -580,7 +583,8 @@ class PecsLayerRuntime:
         # keep all ops fixed-size and avoid implicit GPU sync from variable-size
         # boolean-indexed tensor allocation.
         confirmed_tensor = self._get_confirmed_cache_tensor(device=dev)
-        self._pending_confirmed_tensor = confirmed_tensor  # snapshot for capture()
+        if not is_compiling:
+            self._pending_confirmed_tensor = confirmed_tensor  # snapshot for capture()
         # valid_confirmed: all entries >= 0 (sentinel = -1)
         # Keep as fixed-size; _merge_candidate_tensors already filters sentinels.
         valid_confirmed = confirmed_tensor
@@ -651,55 +655,59 @@ class PecsLayerRuntime:
         # Skip scalar reduce .item() (causes GPU sync breaking CUDA graphs).
         # We can accept stats being slightly inaccurate or zeros during decode,
         # or we could log them asynchronously.
-        n_prop = proposal_tensor.shape[0]
-        n_comb = combined_tensor.shape[0]
-        n_phys = combined_physical_tensor.shape[0]
-        
-        self.stats.mark_prefetch(
-            num_confirmed_experts=0,  # omitted to avoid sync
-            num_proposal_experts=n_prop,
-            num_combined_experts=n_comb,
-            num_combined_physical_experts=n_phys,
-        )
+        if not is_compiling:
+            n_prop = proposal_tensor.shape[0]
+            n_comb = combined_tensor.shape[0]
+            n_phys = combined_physical_tensor.shape[0]
+            
+            self.stats.mark_prefetch(
+                num_confirmed_experts=0,  # omitted to avoid sync
+                num_proposal_experts=n_prop,
+                num_combined_experts=n_comb,
+                num_combined_physical_experts=n_phys,
+            )
 
-        # ── Diagnostic timing log ─────────────────────────────────────────────
-        if _PECS_DEBUG_TIMING:
-            self._debug_stage_time_total += time.perf_counter() - _t0
-            self._debug_stage_time_calls += 1
-            if self._debug_stage_time_calls % _PECS_TIMING_INTERVAL == 0:
-                avg_us = (
-                    self._debug_stage_time_total / self._debug_stage_time_calls * 1e6
-                )
-                logger.warning(
-                    "[PECS TIMING] %s: avg stage_prefetch CPU wall time = %.1f µs "
-                    "over %d calls (NOOP=%s NO_MLP=%s)",
-                    self.layer_name,
-                    avg_us,
-                    self._debug_stage_time_calls,
-                    _PECS_DEBUG_NOOP_STAGE,
-                    _PECS_DEBUG_NO_MLP,
-                )
-                self._debug_stage_time_total = 0.0
-                self._debug_stage_time_calls = 0
+            # ── Diagnostic timing log ─────────────────────────────────────────────
+            if _PECS_DEBUG_TIMING:
+                self._debug_stage_time_total += time.perf_counter() - _t0
+                self._debug_stage_time_calls += 1
+                if self._debug_stage_time_calls % _PECS_TIMING_INTERVAL == 0:
+                    avg_us = (
+                        self._debug_stage_time_total / self._debug_stage_time_calls * 1e6
+                    )
+                    logger.warning(
+                        "[PECS TIMING] %s: avg stage_prefetch CPU wall time = %.1f µs "
+                        "over %d calls (NOOP=%s NO_MLP=%s)",
+                        self.layer_name,
+                        avg_us,
+                        self._debug_stage_time_calls,
+                        _PECS_DEBUG_NOOP_STAGE,
+                        _PECS_DEBUG_NO_MLP,
+                    )
+                    self._debug_stage_time_total = 0.0
+                    self._debug_stage_time_calls = 0
 
-    @torch.compiler.disable
     def capture(self, logical_ids: torch.Tensor) -> None:
         if not self.enabled:
             return
-        if not _PECS_RUNTIME_ENABLED.get():
-            self._pending_proposals = None
-            self._pending_confirmed_tensor = None
-            return
+            
+        is_compiling = torch.compiler.is_compiling()
+        
+        if not is_compiling:
+            if not _PECS_RUNTIME_ENABLED.get():
+                self._pending_proposals = None
+                self._pending_confirmed_tensor = None
+                return
 
-        # Skip capture during decode (batch_size == 1) to avoid dynamic shapes
-        # and Python-side operations breaking the CUDA graph capture.
-        # The confirmed cache is already built during prefill.
-        if _PECS_DEBUG_NOOP_STAGE or _PECS_DEBUG_NO_CAPTURE or logical_ids.shape[0] == 1:
-            self._pending_proposals = None
-            self._pending_confirmed_tensor = None
-            return
+            # Skip capture during decode (batch_size == 1) to avoid dynamic shapes
+            # and Python-side operations breaking the CUDA graph capture.
+            # The confirmed cache is already built during prefill.
+            if _PECS_DEBUG_NOOP_STAGE or _PECS_DEBUG_NO_CAPTURE or logical_ids.shape[0] == 1:
+                self._pending_proposals = None
+                self._pending_confirmed_tensor = None
+                return
 
-        self.stats.stage_capture_calls += 1
+            self.stats.stage_capture_calls += 1
 
         # Flatten logical_ids to 1D [batch * top_k] before masking and broadcasting
         logical_ids_1d = logical_ids.reshape(-1)
@@ -713,50 +721,51 @@ class PecsLayerRuntime:
         # We don't unique here because it also returns a dynamic sized tensor
 
         # --- hit-rate accounting BEFORE cache update (GPU broadcast) ---
-        if self._pending_confirmed_tensor is not None:
-            conf = self._pending_confirmed_tensor.to(device=actual.device)
-            conf_mask = (conf >= 0)
-            
-            # Hit if ANY valid actual ID is in the valid conf IDs
-            # Shape: [batch*topk, num_experts]
-            matches = (actual.unsqueeze(1) == conf.unsqueeze(0))
-            # Mask out invalid actuals and invalid confs
-            matches = matches & valid_mask.unsqueeze(1) & conf_mask.unsqueeze(0)
-            
-            conf_hit = matches.any()
-            self.stats.confirmed_queries += 1
-            self._accumulate_tensor_counter(
-                "_confirmed_hits_tensor", conf_hit.long()
-            )
-
-        if self._pending_proposals is not None:
-            prop = self._pending_proposals.to(device=actual.device).reshape(-1)
-            prop_mask = (prop >= 0)
-            
-            matches = (actual.unsqueeze(1) == prop.unsqueeze(0))
-            matches = matches & valid_mask.unsqueeze(1) & prop_mask.unsqueeze(0)
-            prop_hit = matches.any()
-            
-            # For exact match, we skip for now since it's hard without unique
-            exact = torch.zeros((), dtype=torch.bool, device=actual.device)
-
-            self.stats.proposal_queries += 1
-            self._accumulate_tensor_counter(
-                "_proposal_hits_tensor", prop_hit.long()
-            )
-            self._accumulate_tensor_counter(
-                "_proposal_exact_matches_tensor", exact.long()
-            )
-
-            # combined hit
+        if not is_compiling:
             if self._pending_confirmed_tensor is not None:
-                comb_hit = conf_hit | prop_hit
-            else:
-                comb_hit = prop_hit
-            self.stats.combined_queries += 1
-            self._accumulate_tensor_counter(
-                "_combined_hits_tensor", comb_hit.long()
-            )
+                conf = self._pending_confirmed_tensor.to(device=actual.device)
+                conf_mask = (conf >= 0)
+                
+                # Hit if ANY valid actual ID is in the valid conf IDs
+                # Shape: [batch*topk, num_experts]
+                matches = (actual.unsqueeze(1) == conf.unsqueeze(0))
+                # Mask out invalid actuals and invalid confs
+                matches = matches & valid_mask.unsqueeze(1) & conf_mask.unsqueeze(0)
+                
+                conf_hit = matches.any()
+                self.stats.confirmed_queries += 1
+                self._accumulate_tensor_counter(
+                    "_confirmed_hits_tensor", conf_hit.long()
+                )
+
+            if self._pending_proposals is not None:
+                prop = self._pending_proposals.to(device=actual.device).reshape(-1)
+                prop_mask = (prop >= 0)
+                
+                matches = (actual.unsqueeze(1) == prop.unsqueeze(0))
+                matches = matches & valid_mask.unsqueeze(1) & prop_mask.unsqueeze(0)
+                prop_hit = matches.any()
+                
+                # For exact match, we skip for now since it's hard without unique
+                exact = torch.zeros((), dtype=torch.bool, device=actual.device)
+
+                self.stats.proposal_queries += 1
+                self._accumulate_tensor_counter(
+                    "_proposal_hits_tensor", prop_hit.long()
+                )
+                self._accumulate_tensor_counter(
+                    "_proposal_exact_matches_tensor", exact.long()
+                )
+
+                # combined hit
+                if self._pending_confirmed_tensor is not None:
+                    comb_hit = conf_hit | prop_hit
+                else:
+                    comb_hit = prop_hit
+                self.stats.combined_queries += 1
+                self._accumulate_tensor_counter(
+                    "_combined_hits_tensor", comb_hit.long()
+                )
 
         # --- update confirmed cache (GPU tensor, NO Python deque) ---
         # unique does cause a sync, but we use it sparingly or avoid it if possible
