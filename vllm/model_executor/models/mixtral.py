@@ -42,6 +42,11 @@ def pecs_stream_overlap(hidden_states: torch.Tensor, obj_id: int) -> None:
         moe, stream, event = _PECS_REGISTRY[obj_id]
         pecs_layer = getattr(moe, 'experts', None)
         if pecs_layer is not None and hasattr(pecs_layer, 'maybe_stage_pecs_prefetch'):
+            # Fork the CUDA graph capture to the background stream!
+            # Without this, the background stream is uncaptured and triggers
+            # cudaErrorStreamCaptureIsolation during CUDAGraph capture.
+            stream.wait_stream(torch.cuda.current_stream())
+            
             with torch.cuda.stream(stream):
                 pecs_layer.maybe_stage_pecs_prefetch(hidden_states)
                 event.record(stream)
