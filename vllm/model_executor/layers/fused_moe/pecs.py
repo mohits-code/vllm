@@ -552,30 +552,16 @@ class PecsLayerRuntime:
         if not _PECS_RUNTIME_ENABLED.get():
             self.stats.stage_disabled_calls += 1
             self._pending_proposals = None
-            self._pending_confirmed_tensor = None
             self._pending_confirmed_snapshot = tuple(self._confirmed_cache)
             return
 
         self._maybe_load_predictor(hidden_states)
-        if hidden_states.device.type == "cuda":
-            confirmed_expert_tensor = self._get_confirmed_cache_tensor(
-                device=hidden_states.device
-            )
-            self._pending_confirmed_snapshot = ()
-        else:
-            self._pending_confirmed_snapshot = tuple(self._confirmed_cache)
-            confirmed_expert_tensor = self._confirmed_experts_tensor(
-                self._pending_confirmed_snapshot,
-                device=hidden_states.device,
-            )
-        self._pending_confirmed_tensor = confirmed_expert_tensor
+        self._pending_confirmed_snapshot = tuple(self._confirmed_cache)
+        confirmed_experts = self._pending_confirmed_snapshot
 
         if self._predictor is None:
             self._pending_proposals = None
             proposal_experts: tuple[int, ...] = ()
-            proposal_expert_tensor = torch.full(
-                (self.top_k,), -1, device=hidden_states.device, dtype=torch.int32
-            )
         else:
             with torch.inference_mode():
                 predictor_param = next(self._predictor.parameters())
@@ -586,40 +572,24 @@ class PecsLayerRuntime:
                 self._pending_proposals = torch.topk(
                     logits, k=min(self.top_k, logits.shape[-1]), dim=-1
                 ).indices.to(device=hidden_states.device, dtype=torch.int32)
-            if hidden_states.device.type == "cuda":
-                proposal_expert_tensor = self._rank_proposal_experts_tensor(
-                    self._pending_proposals,
-                    device=hidden_states.device,
-                )
-                proposal_experts = ()
-            else:
-                proposal_experts = self._rank_proposal_experts(self._pending_proposals)
-                proposal_expert_tensor = torch.tensor(
-                    proposal_experts,
-                    device=hidden_states.device,
-                    dtype=torch.int32,
-                )
+            
+            proposals_cpu = self._pending_proposals.cpu()
+            proposal_experts = self._rank_proposal_experts(proposals_cpu)
 
-        combined_expert_tensor = torch.cat(
-            [proposal_expert_tensor.flatten(), confirmed_expert_tensor.flatten()]
-        )
-        combined_expert_tensor = combined_expert_tensor[combined_expert_tensor >= 0]
-        combined_expert_tensor = _unique_preserve_order(combined_expert_tensor).to(torch.int32)
-
-        l2p_gpu = getattr(self, "_gpu_logical_to_physical_map", None)
-        if l2p_gpu is not None:
-            l2p = l2p_gpu.to(hidden_states.device)
-            valid_mask = combined_expert_tensor < l2p.shape[0]
-            safe_logical = combined_expert_tensor[valid_mask]
-
-            phys_candidates = l2p[safe_logical.to(torch.int64)]
-            combined_physical_expert_tensor = phys_candidates.flatten().to(torch.int32)
-            combined_physical_expert_tensor = combined_physical_expert_tensor[combined_physical_expert_tensor >= 0]
-            combined_physical_expert_tensor = _unique_preserve_order(combined_physical_expert_tensor)
-        else:
-            combined_physical_expert_tensor = combined_expert_tensor
+        combined_experts = self._merge_candidates(confirmed_experts, proposal_experts)
+        combined_physical_experts = self._map_logical_candidates_to_physical(combined_experts)
 
         if hidden_states.device.type == "cuda":
+            if not combined_experts:
+                combined_expert_tensor = torch.empty(0, dtype=torch.int32, device=hidden_states.device)
+            else:
+                combined_expert_tensor = torch.tensor(combined_experts, dtype=torch.int32, device=hidden_states.device)
+                
+            if not combined_physical_experts:
+                combined_physical_expert_tensor = torch.empty(0, dtype=torch.int32, device=hidden_states.device)
+            else:
+                combined_physical_expert_tensor = torch.tensor(combined_physical_experts, dtype=torch.int32, device=hidden_states.device)
+
             torch.ops.vllm.pecs_prefetch_experts(
                 hidden_states,
                 combined_expert_tensor,
@@ -628,6 +598,8 @@ class PecsLayerRuntime:
                 int(hidden_states.shape[0]),
             )
         else:
+            combined_expert_tensor = torch.tensor(combined_experts, dtype=torch.int32, device=hidden_states.device)
+            combined_physical_expert_tensor = torch.tensor(combined_physical_experts, dtype=torch.int32, device=hidden_states.device)
             get_offloader().prefetch_experts(
                 self.layer_name,
                 combined_expert_tensor,
@@ -635,33 +607,11 @@ class PecsLayerRuntime:
                 num_tokens=int(hidden_states.shape[0]),
             )
 
-        num_proposal_experts = int(proposal_expert_tensor.numel())
-        num_combined_experts = int(combined_expert_tensor.numel())
-        num_combined_physical_experts = int(combined_physical_expert_tensor.numel())
-
         self.stats.mark_prefetch(
-            num_confirmed_experts=int(confirmed_expert_tensor.numel()),
-            num_proposal_experts=num_proposal_experts,
-            num_combined_experts=num_combined_experts,
-            num_combined_physical_experts=num_combined_physical_experts,
-        )
-
-    @staticmethod
-    def _has_overlap(
-        actual: torch.Tensor, predicted: torch.Tensor | tuple[int, ...]
-    ) -> torch.Tensor:
-        if isinstance(predicted, tuple):
-            if not predicted:
-                return torch.zeros(
-                    actual.shape[0], device=actual.device, dtype=torch.bool
-                )
-            predicted_tensor = torch.tensor(
-                predicted, device=actual.device, dtype=actual.dtype
-            ).unsqueeze(0)
-        else:
-            predicted_tensor = predicted.to(device=actual.device, dtype=actual.dtype)
-        return (actual.unsqueeze(-1) == predicted_tensor.unsqueeze(-2)).any(
-            dim=(-1, -2)
+            num_confirmed_experts=len(confirmed_experts),
+            num_proposal_experts=len(proposal_experts),
+            num_combined_experts=len(combined_experts),
+            num_combined_physical_experts=len(combined_physical_experts),
         )
 
     @torch.compiler.disable
@@ -670,88 +620,58 @@ class PecsLayerRuntime:
             return
         if not _PECS_RUNTIME_ENABLED.get():
             self._pending_proposals = None
-            self._pending_confirmed_tensor = None
             self._pending_confirmed_snapshot = tuple(self._confirmed_cache)
             return
 
-        actual = logical_ids.to(dtype=torch.int32)
-        num_tokens = int(actual.shape[0])
-
-        confirmed_reference: torch.Tensor | tuple[int, ...]
-        if actual.device.type == "cuda":
-            confirmed_reference = (
-                self._pending_confirmed_tensor
-                if self._pending_confirmed_tensor is not None
-                else self._get_confirmed_cache_tensor(device=actual.device)
-            )
-        else:
-            confirmed_reference = self._pending_confirmed_snapshot
-
-        confirmed_overlap = self._has_overlap(actual, confirmed_reference)
+        num_tokens = int(logical_ids.shape[0])
+        actual_cpu = logical_ids.cpu()
+        actual_list = actual_cpu.reshape(-1).tolist()
+        
+        actual_set = set(a for a in actual_list if a >= 0)
+        confirmed_set = set(self._pending_confirmed_snapshot)
+        confirmed_overlap = len(actual_set.intersection(confirmed_set))
+        
         self.stats.confirmed_queries += num_tokens
-
-        if actual.device.type == "cuda":
-            self._accumulate_tensor_counter(
-                "_confirmed_hits_tensor",
-                confirmed_overlap.sum(),
-            )
-        else:
-            self.stats.confirmed_hits += int(confirmed_overlap.sum().item())
-
+        self.stats.confirmed_hits += confirmed_overlap
+        
         if self._pending_proposals is not None:
-            proposal_overlap = self._has_overlap(actual, self._pending_proposals)
-            proposal_exact = (
-                torch.sort(actual, dim=-1).values
-                == torch.sort(self._pending_proposals.to(actual.device), dim=-1).values
-            ).all(dim=-1)
+            props_cpu = self._pending_proposals.cpu()
+            
+            proposal_overlap = 0
+            proposal_exact = 0
+            combined_overlap = 0
+            
+            for i in range(num_tokens):
+                a_tok = set(a for a in actual_cpu[i].tolist() if a >= 0)
+                p_tok = set(p for p in props_cpu[i].tolist() if p >= 0)
+                
+                if a_tok.intersection(p_tok):
+                    proposal_overlap += 1
+                if a_tok == p_tok and len(a_tok) > 0:
+                    proposal_exact += 1
+                if a_tok.intersection(confirmed_set) or a_tok.intersection(p_tok):
+                    combined_overlap += 1
+                    
             self.stats.proposal_queries += num_tokens
-
-            if actual.device.type == "cuda":
-                self._accumulate_tensor_counter(
-                    "_proposal_hits_tensor",
-                    proposal_overlap.sum(),
-                )
-                self._accumulate_tensor_counter(
-                    "_proposal_exact_matches_tensor",
-                    proposal_exact.sum(),
-                )
-            else:
-                self.stats.proposal_hits += int(proposal_overlap.sum().item())
-                self.stats.proposal_exact_matches += int(proposal_exact.sum().item())
-
-            combined_hits = confirmed_overlap | proposal_overlap
+            self.stats.proposal_hits += proposal_overlap
+            self.stats.proposal_exact_matches += proposal_exact
+            
             self.stats.combined_queries += num_tokens
-            if actual.device.type == "cuda":
-                self._accumulate_tensor_counter(
-                    "_combined_hits_tensor",
-                    combined_hits.sum(),
-                )
-            else:
-                self.stats.combined_hits += int(combined_hits.sum().item())
-
-        if actual.device.type == "cuda":
-            self._update_confirmed_cache_tensor(actual)
-        else:
-            for expert_id in actual.reshape(-1).tolist():
-                expert = int(expert_id)
-                if expert < 0:
-                    continue
-                try:
-                    self._confirmed_cache.remove(expert)
-                except ValueError:
-                    pass
-                self._confirmed_cache.appendleft(expert)
+            self.stats.combined_hits += combined_overlap
+            
+        for expert in actual_list:
+            if expert < 0:
+                continue
+            try:
+                self._confirmed_cache.remove(expert)
+            except ValueError:
+                pass
+            self._confirmed_cache.appendleft(expert)
 
         self._pending_proposals = None
-        self._pending_confirmed_tensor = None
         self._pending_confirmed_snapshot = tuple(self._confirmed_cache)
 
     def get_confirmed_experts(self) -> tuple[int, ...]:
-        if self._confirmed_cache_tensor is not None:
-            return tuple(
-                int(expert_id)
-                for expert_id in self._confirmed_cache_tensor.reshape(-1).tolist()
-            )
         return tuple(self._confirmed_cache)
 
     def snapshot(self) -> dict[str, object]:
