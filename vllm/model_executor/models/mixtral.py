@@ -34,12 +34,12 @@ from transformers import MixtralConfig
 
 import torch.library
 
-_PECS_REGISTRY: dict[int, tuple[object, torch.cuda.Stream, torch.cuda.Event]] = {}
+_PECS_REGISTRY: dict[int, tuple[object, torch.cuda.Stream]] = {}
 
 @torch.library.custom_op("vllm::pecs_stream_overlap", mutates_args=("hidden_states",))
 def pecs_stream_overlap(hidden_states: torch.Tensor, obj_id: int) -> None:
     if obj_id in _PECS_REGISTRY:
-        moe, stream, event = _PECS_REGISTRY[obj_id]
+        moe, stream = _PECS_REGISTRY[obj_id]
         pecs_layer = getattr(moe, 'experts', None)
         if pecs_layer is not None and hasattr(pecs_layer, 'maybe_stage_pecs_prefetch'):
             # Fork the CUDA graph capture to the background stream!
@@ -49,7 +49,6 @@ def pecs_stream_overlap(hidden_states: torch.Tensor, obj_id: int) -> None:
             
             with torch.cuda.stream(stream):
                 pecs_layer.maybe_stage_pecs_prefetch(hidden_states)
-                event.record(stream)
 
 @pecs_stream_overlap.register_fake
 def _pecs_stream_overlap_fake(hidden_states: torch.Tensor, obj_id: int) -> None:
@@ -58,8 +57,8 @@ def _pecs_stream_overlap_fake(hidden_states: torch.Tensor, obj_id: int) -> None:
 @torch.library.custom_op("vllm::pecs_wait_stream", mutates_args=("hidden_states",))
 def pecs_wait_stream(hidden_states: torch.Tensor, obj_id: int) -> None:
     if obj_id in _PECS_REGISTRY:
-        _, stream, event = _PECS_REGISTRY[obj_id]
-        torch.cuda.current_stream().wait_event(event)
+        _, stream = _PECS_REGISTRY[obj_id]
+        torch.cuda.current_stream().wait_stream(stream)
 
 @pecs_wait_stream.register_fake
 def _pecs_wait_stream_fake(hidden_states: torch.Tensor, obj_id: int) -> None:
@@ -299,12 +298,11 @@ class MixtralDecoderLayer(nn.Module):
         self.post_attention_layernorm = RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
         )
-        # Dedicated CUDA stream + event for overlapping PECS staging with Attention.
+        # Dedicated CUDA stream for overlapping PECS staging with Attention.
         # PECS fires on _pecs_stream the moment layernorm output is ready;
-        # _pecs_event gates the MoE kernel so it only starts after staging is done.
+        # main stream wait_stream() gates the MoE kernel so it only starts after staging is done.
         self._pecs_stream: torch.cuda.Stream | None = torch.cuda.Stream()
-        self._pecs_event: torch.cuda.Event | None = torch.cuda.Event()
-        _PECS_REGISTRY[id(self)] = (self.block_sparse_moe, self._pecs_stream, self._pecs_event)
+        _PECS_REGISTRY[id(self)] = (self.block_sparse_moe, self._pecs_stream)
 
     def forward(
         self,
