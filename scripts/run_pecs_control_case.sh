@@ -7,6 +7,7 @@ Usage: scripts/run_pecs_control_case.sh CASE
 
 CASE:
   baseline
+  baseline_dbo
   pecs
   pecs_dbo
   pecs_eplb
@@ -76,6 +77,8 @@ optional_flag MAX_NUM_BATCHED_TOKENS --max-num-batched-tokens
 
 case "$CASE" in
   baseline)
+    ;;
+  baseline_dbo)
     ;;
   pecs|pecs_dbo|pecs_eplb|pecs_dbo_eplb)
     : "${PECS_PREDICTOR_PATH:?set PECS_PREDICTOR_PATH for PECS cases}"
