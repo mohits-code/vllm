@@ -627,9 +627,12 @@ class PecsLayerRuntime:
         actual_cpu = logical_ids.cpu()
         actual_list = actual_cpu.reshape(-1).tolist()
         
-        actual_set = set(a for a in actual_list if a >= 0)
         confirmed_set = set(self._pending_confirmed_snapshot)
-        confirmed_overlap = len(actual_set.intersection(confirmed_set))
+        confirmed_overlap = 0
+        for i in range(num_tokens):
+            a_tok = set(a for a in actual_cpu[i].tolist() if a >= 0)
+            if a_tok.intersection(confirmed_set):
+                confirmed_overlap += 1
         
         self.stats.confirmed_queries += num_tokens
         self.stats.confirmed_hits += confirmed_overlap
