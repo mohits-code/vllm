@@ -566,6 +566,13 @@ class PecsLayerRuntime:
             proposal_tensor = self._rank_proposal_experts_tensor(
                 self._pending_proposals, device=dev,
             )
+            # Cap to top_k most-voted experts. Without this, N concurrent
+            # tokens × top_k each can union into nearly all experts (7/8 for
+            # Mixtral at concurrency=8), making candidates meaningless.
+            # Ranking is already by vote frequency so [:top_k] keeps the
+            # most-agreed-upon experts across the batch.
+            if proposal_tensor.numel() > self.top_k:
+                proposal_tensor = proposal_tensor[: self.top_k]
 
         # --- merge + map: all GPU tensor ops, NO Python lists ---
         combined_tensor = self._merge_candidate_tensors(
