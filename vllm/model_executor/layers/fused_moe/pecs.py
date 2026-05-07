@@ -552,16 +552,21 @@ class PecsLayerRuntime:
         if not _PECS_RUNTIME_ENABLED.get():
             self.stats.stage_disabled_calls += 1
             self._pending_proposals = None
-            self._pending_confirmed_snapshot = tuple(self._confirmed_cache)
+            self._pending_confirmed_tensor = None
             return
 
         self._maybe_load_predictor(hidden_states)
-        self._pending_confirmed_snapshot = tuple(self._confirmed_cache)
-        confirmed_experts = self._pending_confirmed_snapshot
+        dev = hidden_states.device
 
+        # --- confirmed cache: GPU tensor, NO .cpu() ---
+        confirmed_tensor = self._get_confirmed_cache_tensor(device=dev)
+        self._pending_confirmed_tensor = confirmed_tensor  # snapshot for capture()
+        valid_confirmed = confirmed_tensor[confirmed_tensor >= 0]
+
+        # --- MLP proposals: stay on GPU, NO .cpu() ---
         if self._predictor is None:
             self._pending_proposals = None
-            proposal_experts: tuple[int, ...] = ()
+            proposal_tensor = torch.empty(0, device=dev, dtype=torch.int32)
         else:
             with torch.inference_mode():
                 predictor_param = next(self._predictor.parameters())
@@ -571,47 +576,42 @@ class PecsLayerRuntime:
                 logits = self._predictor(inputs)
                 self._pending_proposals = torch.topk(
                     logits, k=min(self.top_k, logits.shape[-1]), dim=-1
-                ).indices.to(device=hidden_states.device, dtype=torch.int32)
-            
-            proposals_cpu = self._pending_proposals.cpu()
-            proposal_experts = self._rank_proposal_experts(proposals_cpu)
+                ).indices.to(device=dev, dtype=torch.int32)
+            proposal_tensor = self._rank_proposal_experts_tensor(
+                self._pending_proposals, device=dev,
+            )
 
-        combined_experts = self._merge_candidates(confirmed_experts, proposal_experts)
-        combined_physical_experts = self._map_logical_candidates_to_physical(combined_experts)
+        # --- merge + map: all GPU tensor ops, NO Python lists ---
+        combined_tensor = self._merge_candidate_tensors(
+            valid_confirmed, proposal_tensor,
+        )
+        combined_physical_tensor = self._map_logical_candidates_to_physical_tensor(
+            combined_tensor,
+        )
 
-        if hidden_states.device.type == "cuda":
-            if not combined_experts:
-                combined_expert_tensor = torch.empty(0, dtype=torch.int32, device=hidden_states.device)
-            else:
-                combined_expert_tensor = torch.tensor(combined_experts, dtype=torch.int32, device=hidden_states.device)
-                
-            if not combined_physical_experts:
-                combined_physical_expert_tensor = torch.empty(0, dtype=torch.int32, device=hidden_states.device)
-            else:
-                combined_physical_expert_tensor = torch.tensor(combined_physical_experts, dtype=torch.int32, device=hidden_states.device)
-
+        # --- prefetch call: both tensors already on device ---
+        if dev.type == "cuda":
             torch.ops.vllm.pecs_prefetch_experts(
                 hidden_states,
-                combined_expert_tensor,
-                combined_physical_expert_tensor,
+                combined_tensor,
+                combined_physical_tensor,
                 self.layer_name,
-                int(hidden_states.shape[0]),
+                hidden_states.shape[0],
             )
         else:
-            combined_expert_tensor = torch.tensor(combined_experts, dtype=torch.int32, device=hidden_states.device)
-            combined_physical_expert_tensor = torch.tensor(combined_physical_experts, dtype=torch.int32, device=hidden_states.device)
             get_offloader().prefetch_experts(
                 self.layer_name,
-                combined_expert_tensor,
-                physical_expert_ids=combined_physical_expert_tensor,
-                num_tokens=int(hidden_states.shape[0]),
+                combined_tensor,
+                physical_expert_ids=combined_physical_tensor,
+                num_tokens=hidden_states.shape[0],
             )
 
+        # --- stats: numel() is CPU metadata, no sync ---
         self.stats.mark_prefetch(
-            num_confirmed_experts=len(confirmed_experts),
-            num_proposal_experts=len(proposal_experts),
-            num_combined_experts=len(combined_experts),
-            num_combined_physical_experts=len(combined_physical_experts),
+            num_confirmed_experts=int(valid_confirmed.numel()),
+            num_proposal_experts=int(proposal_tensor.numel()),
+            num_combined_experts=int(combined_tensor.numel()),
+            num_combined_physical_experts=int(combined_physical_tensor.numel()),
         )
 
     @torch.compiler.disable
@@ -620,54 +620,76 @@ class PecsLayerRuntime:
             return
         if not _PECS_RUNTIME_ENABLED.get():
             self._pending_proposals = None
-            self._pending_confirmed_snapshot = tuple(self._confirmed_cache)
+            self._pending_confirmed_tensor = None
             return
 
         self.stats.stage_capture_calls += 1
 
-        # One blocking GPU->CPU copy per capture call (unavoidable to update the
-        # confirmed cache deque). We call .tolist() on a small int32 tensor of
-        # unique expert IDs (at most 8 values for Mixtral), not on hidden states.
-        unique_experts = torch.unique(logical_ids[logical_ids >= 0])
-        actual_list: list[int] = unique_experts.tolist()
-        actual_set = set(actual_list)
+        # --- all ops on GPU, NO .cpu(), NO .tolist() ---
+        actual = torch.unique(logical_ids[logical_ids >= 0])
 
-        # ---- update confirmed cache deque (LRU-style: most recent at front) ----
-        for expert in actual_list:
-            try:
-                self._confirmed_cache.remove(expert)
-            except ValueError:
-                pass
-            self._confirmed_cache.appendleft(expert)
+        # --- hit-rate accounting BEFORE cache update (GPU broadcast) ---
+        if self._pending_confirmed_tensor is not None:
+            conf = self._pending_confirmed_tensor.to(device=actual.device)
+            valid_conf = conf[conf >= 0]
+            if valid_conf.numel() > 0 and actual.numel() > 0:
+                conf_hit = (
+                    actual.unsqueeze(1) == valid_conf.unsqueeze(0)
+                ).any()
+            else:
+                conf_hit = torch.zeros((), dtype=torch.bool, device=actual.device)
+            self.stats.confirmed_queries += 1
+            self._accumulate_tensor_counter(
+                "_confirmed_hits_tensor", conf_hit.long()
+            )
 
-        # ---- hit-rate accounting (CPU-only, uses snapshots from stage_prefetch) ----
-        confirmed_snapshot = set(self._pending_confirmed_snapshot or ())
-
-        self.stats.confirmed_queries += 1
-        if actual_set & confirmed_snapshot:
-            self.stats.confirmed_hits += 1
-
-        if self._pending_proposals is not None:
-            # _pending_proposals is already on CPU (pulled in stage_prefetch)
-            proposal_ids_cpu = self._pending_proposals
-            if proposal_ids_cpu.device.type != "cpu":
-                proposal_ids_cpu = proposal_ids_cpu.cpu()
-            proposal_set = set(proposal_ids_cpu.reshape(-1).tolist())
-            proposal_set.discard(-1)
+        if self._pending_proposals is not None and actual.numel() > 0:
+            prop = self._pending_proposals.to(device=actual.device).reshape(-1)
+            valid_prop = prop[prop >= 0]
+            if valid_prop.numel() > 0:
+                prop_hit = (
+                    actual.unsqueeze(1) == valid_prop.unsqueeze(0)
+                ).any()
+                # exact match: both sets equal (same size and full overlap)
+                all_actual_in_prop = (
+                    actual.unsqueeze(1) == valid_prop.unsqueeze(0)
+                ).any(dim=1).all()
+                all_prop_in_actual = (
+                    valid_prop.unsqueeze(1) == actual.unsqueeze(0)
+                ).any(dim=1).all()
+                exact = all_actual_in_prop & all_prop_in_actual
+            else:
+                prop_hit = torch.zeros((), dtype=torch.bool, device=actual.device)
+                exact = torch.zeros((), dtype=torch.bool, device=actual.device)
 
             self.stats.proposal_queries += 1
-            if actual_set & proposal_set:
-                self.stats.proposal_hits += 1
-            if actual_set == proposal_set and len(actual_set) > 0:
-                self.stats.proposal_exact_matches += 1
+            self._accumulate_tensor_counter(
+                "_proposal_hits_tensor", prop_hit.long()
+            )
+            self._accumulate_tensor_counter(
+                "_proposal_exact_matches_tensor", exact.long()
+            )
 
-            combined_set = confirmed_snapshot | proposal_set
+            # combined hit
+            if self._pending_confirmed_tensor is not None:
+                conf2 = self._pending_confirmed_tensor.to(device=actual.device)
+                valid_conf2 = conf2[conf2 >= 0]
+                combined = torch.cat([valid_conf2, valid_prop])
+                combined_unique = torch.unique(combined)
+                comb_hit = (
+                    actual.unsqueeze(1) == combined_unique.unsqueeze(0)
+                ).any()
+            else:
+                comb_hit = prop_hit
             self.stats.combined_queries += 1
-            if actual_set & combined_set:
-                self.stats.combined_hits += 1
+            self._accumulate_tensor_counter(
+                "_combined_hits_tensor", comb_hit.long()
+            )
 
+        # --- update confirmed cache (GPU tensor, NO Python deque) ---
+        self._update_confirmed_cache_tensor(actual)
         self._pending_proposals = None
-        self._pending_confirmed_snapshot = tuple(self._confirmed_cache)
+        self._pending_confirmed_tensor = None
 
     def get_confirmed_experts(self) -> tuple[int, ...]:
         return tuple(self._confirmed_cache)
