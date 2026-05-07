@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from collections import deque
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -30,6 +31,18 @@ from torch import nn
 import vllm.model_executor.offloader.prefetch_ops  # noqa: F401
 from vllm.logger import init_logger
 from vllm.model_executor.offloader.base import get_offloader
+
+# ── Diagnostic env vars for isolating latency contributions ──────────────────
+# PECS_DEBUG_NOOP_STAGE=1  : skip ALL stage_prefetch work (return immediately)
+#                            → if TPOT drops back to baseline, PECS is the cause
+# PECS_DEBUG_NO_MLP=1      : skip MLP forward, keep confirmed cache only
+#                            → isolates MLP overhead from graph-break overhead
+# PECS_DEBUG_TIMING=1      : log avg CPU-wall time per stage_prefetch call
+#                            (every 2000 calls per layer)
+_PECS_DEBUG_NOOP_STAGE: bool = os.environ.get("PECS_DEBUG_NOOP_STAGE", "") == "1"
+_PECS_DEBUG_NO_MLP: bool = os.environ.get("PECS_DEBUG_NO_MLP", "") == "1"
+_PECS_DEBUG_TIMING: bool = os.environ.get("PECS_DEBUG_TIMING", "") == "1"
+_PECS_TIMING_INTERVAL: int = int(os.environ.get("PECS_TIMING_INTERVAL", "2000"))
 
 logger = init_logger(__name__)
 
@@ -530,6 +543,10 @@ class PecsLayerRuntime:
         ).to(dtype=torch.int64)
         return _unique_preserve_order(merged).to(dtype=torch.int32)
 
+    # Accumulated timing state (CPU wall clock, only used when _PECS_DEBUG_TIMING)
+    _debug_stage_time_total: float = 0.0
+    _debug_stage_time_calls: int = 0
+
     @torch.compiler.disable
     def stage_prefetch(self, hidden_states: torch.Tensor) -> None:
         if not self.enabled:
@@ -541,16 +558,28 @@ class PecsLayerRuntime:
             self._pending_confirmed_tensor = None
             return
 
+        # ── Diagnostic: skip everything, measure pure no-op overhead ─────────
+        if _PECS_DEBUG_NOOP_STAGE:
+            self.stats.stage_disabled_calls += 1
+            return
+
+        _t0 = time.perf_counter() if _PECS_DEBUG_TIMING else 0.0
+
         self._maybe_load_predictor(hidden_states)
         dev = hidden_states.device
 
-        # --- confirmed cache: GPU tensor, NO .cpu() ---
+        # --- confirmed cache: GPU tensor, NO boolean-index (avoids GPU sync) ---
+        # Use clamp+mask instead of confirmed_tensor[confirmed_tensor >= 0] to
+        # keep all ops fixed-size and avoid implicit GPU sync from variable-size
+        # boolean-indexed tensor allocation.
         confirmed_tensor = self._get_confirmed_cache_tensor(device=dev)
         self._pending_confirmed_tensor = confirmed_tensor  # snapshot for capture()
-        valid_confirmed = confirmed_tensor[confirmed_tensor >= 0]
+        # valid_confirmed: all entries >= 0 (sentinel = -1)
+        # Keep as fixed-size; _merge_candidate_tensors already filters sentinels.
+        valid_confirmed = confirmed_tensor
 
         # --- MLP proposals: stay on GPU, NO .cpu() ---
-        if self._predictor is None:
+        if self._predictor is None or _PECS_DEBUG_NO_MLP:
             self._pending_proposals = None
             proposal_tensor = torch.empty(0, device=dev, dtype=torch.int32)
         else:
@@ -599,13 +628,37 @@ class PecsLayerRuntime:
                 num_tokens=hidden_states.shape[0],
             )
 
-        # --- stats: numel() is CPU metadata, no sync ---
+        # --- stats ---
+        n_conf = int((valid_confirmed >= 0).sum().item())  # scalar reduce, no shape sync
+        n_prop = int(proposal_tensor.shape[0])             # static shape, no sync
+        n_comb = int(combined_tensor.shape[0])             # static shape, no sync
+        n_phys = int(combined_physical_tensor.shape[0])    # static shape, no sync
         self.stats.mark_prefetch(
-            num_confirmed_experts=int(valid_confirmed.numel()),
-            num_proposal_experts=int(proposal_tensor.numel()),
-            num_combined_experts=int(combined_tensor.numel()),
-            num_combined_physical_experts=int(combined_physical_tensor.numel()),
+            num_confirmed_experts=n_conf,
+            num_proposal_experts=n_prop,
+            num_combined_experts=n_comb,
+            num_combined_physical_experts=n_phys,
         )
+
+        # ── Diagnostic timing log ─────────────────────────────────────────────
+        if _PECS_DEBUG_TIMING:
+            self._debug_stage_time_total += time.perf_counter() - _t0
+            self._debug_stage_time_calls += 1
+            if self._debug_stage_time_calls % _PECS_TIMING_INTERVAL == 0:
+                avg_us = (
+                    self._debug_stage_time_total / self._debug_stage_time_calls * 1e6
+                )
+                logger.warning(
+                    "[PECS TIMING] %s: avg stage_prefetch CPU wall time = %.1f µs "
+                    "over %d calls (NOOP=%s NO_MLP=%s)",
+                    self.layer_name,
+                    avg_us,
+                    self._debug_stage_time_calls,
+                    _PECS_DEBUG_NOOP_STAGE,
+                    _PECS_DEBUG_NO_MLP,
+                )
+                self._debug_stage_time_total = 0.0
+                self._debug_stage_time_calls = 0
 
     @torch.compiler.disable
     def capture(self, logical_ids: torch.Tensor) -> None:
