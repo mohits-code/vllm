@@ -38,13 +38,16 @@ _PECS_REGISTRY: dict[int, tuple[object, torch.cuda.Stream]] = {}
 
 @torch.library.custom_op("vllm::pecs_stream_overlap", mutates_args=("hidden_states",))
 def pecs_stream_overlap(hidden_states: torch.Tensor, obj_id: int) -> None:
+    # PECS dynamic prefetching uses Python-side operations that cannot be captured
+    # into a static CUDAGraph. We bypass it entirely during capture.
+    if torch.cuda.is_current_stream_capturing():
+        return
+        
     if obj_id in _PECS_REGISTRY:
         moe, stream = _PECS_REGISTRY[obj_id]
         pecs_layer = getattr(moe, 'experts', None)
         if pecs_layer is not None and hasattr(pecs_layer, 'maybe_stage_pecs_prefetch'):
             # Fork the CUDA graph capture to the background stream!
-            # Without this, the background stream is uncaptured and triggers
-            # cudaErrorStreamCaptureIsolation during CUDAGraph capture.
             stream.wait_stream(torch.cuda.current_stream())
             
             with torch.cuda.stream(stream):
@@ -56,6 +59,10 @@ def _pecs_stream_overlap_fake(hidden_states: torch.Tensor, obj_id: int) -> None:
 
 @torch.library.custom_op("vllm::pecs_wait_stream", mutates_args=("hidden_states",))
 def pecs_wait_stream(hidden_states: torch.Tensor, obj_id: int) -> None:
+    # Bypass during CUDAGraph capture since overlap was also bypassed
+    if torch.cuda.is_current_stream_capturing():
+        return
+        
     if obj_id in _PECS_REGISTRY:
         _, stream = _PECS_REGISTRY[obj_id]
         torch.cuda.current_stream().wait_stream(stream)
