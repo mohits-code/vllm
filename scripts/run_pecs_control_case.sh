@@ -96,7 +96,7 @@ case "$CASE" in
 esac
 
 if [[ "$CASE" == *"dbo"* ]]; then
-  cmd+=(--enable-dbo)
+  cmd+=(--enable-dbo --all2all-backend deepep_low_latency)
   optional_flag DBO_DECODE_THRESHOLD --dbo-decode-token-threshold
   optional_flag DBO_PREFILL_THRESHOLD --dbo-prefill-token-threshold
 fi
