@@ -47,8 +47,9 @@ CASE="$1"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8000}"
-PECS_CONFIRMED_CAPACITY="${PECS_CONFIRMED_CAPACITY:-2}"
+PECS_CONFIRMED_CAPACITY="${PECS_CONFIRMED_CAPACITY:-1}"
 PECS_PREDICTOR_DTYPE="${PECS_PREDICTOR_DTYPE:-auto}"
+PECS_PROPOSAL_CONFIDENCE_THRESHOLD="${PECS_PROPOSAL_CONFIDENCE_THRESHOLD:-0.40}"
 API_SERVER_MODULE="${API_SERVER_MODULE:-vllm.entrypoints.openai.api_server}"
 
 cmd=(
@@ -87,6 +88,7 @@ case "$CASE" in
       --pecs-predictor-path "$PECS_PREDICTOR_PATH"
       --pecs-confirmed-capacity "$PECS_CONFIRMED_CAPACITY"
       --pecs-predictor-dtype "$PECS_PREDICTOR_DTYPE"
+      --pecs-proposal-confidence-threshold "$PECS_PROPOSAL_CONFIDENCE_THRESHOLD"
     )
     ;;
   *)
