@@ -270,8 +270,8 @@ class MixtralDecoderLayer(nn.Module):
         # Dedicated CUDA stream + event for overlapping PECS staging with Attention.
         # PECS fires on _pecs_stream the moment layernorm output is ready;
         # _pecs_event gates the MoE kernel so it only starts after staging is done.
-        self._pecs_stream: torch.cuda.Stream | None = None
-        self._pecs_event: torch.cuda.Event | None = None
+        self._pecs_stream: torch.cuda.Stream | None = torch.cuda.Stream()
+        self._pecs_event: torch.cuda.Event | None = torch.cuda.Event()
 
     def forward(
         self,
@@ -292,9 +292,6 @@ class MixtralDecoderLayer(nn.Module):
         # Attention window (~3-8ms/layer), giving 0ms net PECS overhead.
         pecs_layer = getattr(self.block_sparse_moe, 'experts', None)
         if pecs_layer is not None and hasattr(pecs_layer, 'maybe_stage_pecs_prefetch'):
-            if self._pecs_stream is None:
-                self._pecs_stream = torch.cuda.Stream()
-                self._pecs_event = torch.cuda.Event()
             with torch.cuda.stream(self._pecs_stream):
                 pecs_layer.maybe_stage_pecs_prefetch(hidden_states)
                 self._pecs_event.record(self._pecs_stream)
