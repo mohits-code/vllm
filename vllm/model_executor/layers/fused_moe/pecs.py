@@ -623,44 +623,12 @@ class PecsLayerRuntime:
             self._pending_confirmed_snapshot = tuple(self._confirmed_cache)
             return
 
-        num_tokens = int(logical_ids.shape[0])
-        actual_cpu = logical_ids.cpu()
-        actual_list = actual_cpu.reshape(-1).tolist()
-        
-        confirmed_set = set(self._pending_confirmed_snapshot)
-        confirmed_overlap = 0
-        for i in range(num_tokens):
-            a_tok = set(a for a in actual_cpu[i].tolist() if a >= 0)
-            if a_tok.intersection(confirmed_set):
-                confirmed_overlap += 1
-        
-        self.stats.confirmed_queries += num_tokens
-        self.stats.confirmed_hits += confirmed_overlap
-        
-        if self._pending_proposals is not None:
-            props_cpu = self._pending_proposals.cpu()
-            
-            proposal_overlap = 0
-            proposal_exact = 0
-            combined_overlap = 0
-            
-            for i in range(num_tokens):
-                a_tok = set(a for a in actual_cpu[i].tolist() if a >= 0)
-                p_tok = set(p for p in props_cpu[i].tolist() if p >= 0)
-                
-                if a_tok.intersection(p_tok):
-                    proposal_overlap += 1
-                if a_tok == p_tok and len(a_tok) > 0:
-                    proposal_exact += 1
-                if a_tok.intersection(confirmed_set) or a_tok.intersection(p_tok):
-                    combined_overlap += 1
-                    
-            self.stats.proposal_queries += num_tokens
-            self.stats.proposal_hits += proposal_overlap
-            self.stats.proposal_exact_matches += proposal_exact
-            
-            self.stats.combined_queries += num_tokens
-            self.stats.combined_hits += combined_overlap
+        # To avoid massive GPU-CPU synchronization stalls (which halve throughput),
+        # we only extract the unique experts to update the confirmed cache,
+        # bypassing the per-token statistics calculation during benchmarks.
+        unique_experts = torch.unique(logical_ids[logical_ids >= 0])
+        actual_list = unique_experts.tolist()
+
             
         for expert in actual_list:
             if expert < 0:
