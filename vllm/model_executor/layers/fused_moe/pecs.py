@@ -676,12 +676,14 @@ class PecsLayerRuntime:
 
         self.stats.stage_capture_calls += 1
 
+        # Flatten logical_ids to 1D [batch * top_k] before masking and broadcasting
+        logical_ids_1d = logical_ids.reshape(-1)
+
         # We keep actual as fixed size by avoiding logical_ids[logical_ids >= 0]
-        # Since logical_ids comes from router, they might be padded with -1
         # Use valid_mask to zero out -1s for hit checking, avoiding dynamic size tensor creation
-        valid_mask = (logical_ids >= 0)
-        actual = logical_ids.clone()
-        actual[~valid_mask] = -1 # ensure sentinels stay -1
+        valid_mask = (logical_ids_1d >= 0)
+        # Using torch.where is safer and faster than boolean assignment to avoid syncs
+        actual = torch.where(valid_mask, logical_ids_1d, torch.tensor(-1, device=logical_ids_1d.device))
         
         # We don't unique here because it also returns a dynamic sized tensor
 
