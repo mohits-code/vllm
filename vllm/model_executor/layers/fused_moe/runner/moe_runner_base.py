@@ -89,7 +89,8 @@ def _moe_forward(
     layer_name: _layer_name_type,
 ) -> torch.Tensor:
     layer = get_layer_from_name(_resolve_layer_name(layer_name))
-    layer.maybe_stage_pecs_prefetch(hidden_states)
+    # NOTE: stage_prefetch is now launched from MixtralDecoderLayer.forward
+    # in parallel with self_attn on a background CUDA stream.
     return layer.runner.forward_dispatch(
         layer,
         hidden_states,
@@ -114,7 +115,8 @@ def _moe_forward_shared(
     layer_name: _layer_name_type,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     layer = get_layer_from_name(_resolve_layer_name(layer_name))
-    layer.maybe_stage_pecs_prefetch(hidden_states)
+    # NOTE: stage_prefetch is now launched from MixtralDecoderLayer.forward
+    # in parallel with self_attn on a background CUDA stream.
     return layer.runner.forward_dispatch(
         layer,
         hidden_states,

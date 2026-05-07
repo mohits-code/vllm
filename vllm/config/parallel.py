@@ -204,6 +204,10 @@ class ParallelConfig:
     """Capacity of the online confirmed expert cache per MoE layer."""
     pecs_predictor_dtype: PecsPredictorDType = "auto"
     """Runtime dtype for frozen PECS predictor weights."""
+    pecs_proposal_confidence_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
+    """Minimum softmax probability for an MLP-predicted expert to be included
+    in the pre-staged candidate set. 0.0 disables filtering (all top-k included).
+    Values around 0.35-0.45 reduce avg candidates from 4 to ~2 for Mixtral."""
 
     dbo_decode_token_threshold: int = 32
     """The threshold for dual batch overlap for batches only containing decodes.

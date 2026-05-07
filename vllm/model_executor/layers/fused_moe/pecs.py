@@ -241,6 +241,7 @@ class PecsLayerRuntime:
         confirmed_capacity: int,
         predictor_path: str | None,
         predictor_dtype: PecsPredictorDType,
+        proposal_confidence_threshold: float = 0.0,
     ) -> None:
         self.enabled = enabled
         self.layer_name = layer_name
@@ -249,6 +250,7 @@ class PecsLayerRuntime:
         self.confirmed_capacity = confirmed_capacity
         self.predictor_path = predictor_path
         self.predictor_dtype = predictor_dtype
+        self.proposal_confidence_threshold = proposal_confidence_threshold
 
         self.stats = PecsLayerStats()
         self._confirmed_cache: deque[int] = deque(maxlen=max(confirmed_capacity, 1))
@@ -594,17 +596,29 @@ class PecsLayerRuntime:
                     device=predictor_param.device, dtype=predictor_param.dtype
                 )
                 logits = self._predictor(inputs)
-                self._pending_proposals = torch.topk(
-                    logits, k=min(self.top_k, logits.shape[-1]), dim=-1
-                ).indices.to(device=dev, dtype=torch.int32)
+                # Apply softmax confidence threshold: only stage experts where
+                # the predicted probability exceeds the threshold. This keeps
+                # avg candidates close to top_k (ideal = 2 for Mixtral) rather
+                # than bloating to 4+ from indiscriminate topk.
+                probs = torch.softmax(logits, dim=-1)
+                top_probs, top_idx = torch.topk(
+                    probs, k=min(self.top_k, probs.shape[-1]), dim=-1
+                )
+                if self.proposal_confidence_threshold > 0.0:
+                    # Mask low-confidence predictions with sentinel -1
+                    # (static shape: torch.where, no boolean indexing)
+                    sentinel = torch.full_like(top_idx, -1)
+                    threshold = torch.tensor(
+                        self.proposal_confidence_threshold,
+                        device=top_probs.device,
+                        dtype=top_probs.dtype,
+                    )
+                    top_idx = torch.where(top_probs >= threshold, top_idx, sentinel)
+                self._pending_proposals = top_idx.to(dtype=torch.int32)
             proposal_tensor = self._rank_proposal_experts_tensor(
                 self._pending_proposals, device=dev,
             )
-            # Cap to top_k most-voted experts. Without this, N concurrent
-            # tokens × top_k each can union into nearly all experts (7/8 for
-            # Mixtral at concurrency=8), making candidates meaningless.
-            # Ranking is already by vote frequency so [:top_k] keeps the
-            # most-agreed-upon experts across the batch.
+            # Cap to top_k most-voted experts.
             if proposal_tensor.numel() > self.top_k:
                 proposal_tensor = proposal_tensor[: self.top_k]
 

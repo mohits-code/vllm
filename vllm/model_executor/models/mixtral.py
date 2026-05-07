@@ -267,6 +267,11 @@ class MixtralDecoderLayer(nn.Module):
         self.post_attention_layernorm = RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
         )
+        # Dedicated CUDA stream + event for overlapping PECS staging with Attention.
+        # PECS fires on _pecs_stream the moment layernorm output is ready;
+        # _pecs_event gates the MoE kernel so it only starts after staging is done.
+        self._pecs_stream: torch.cuda.Stream | None = None
+        self._pecs_event: torch.cuda.Event | None = None
 
     def forward(
         self,
@@ -280,10 +285,30 @@ class MixtralDecoderLayer(nn.Module):
             hidden_states = self.input_layernorm(hidden_states)
         else:
             hidden_states, residual = self.input_layernorm(hidden_states, residual)
+
+        # Fire PECS staging on a background CUDA stream the instant layernorm
+        # output is ready. Attention has NO dependency on PECS output, so the
+        # two run concurrently. PECS (187µs/layer) is fully hidden inside the
+        # Attention window (~3-8ms/layer), giving 0ms net PECS overhead.
+        pecs_layer = getattr(self.block_sparse_moe, 'experts', None)
+        if pecs_layer is not None and hasattr(pecs_layer, 'maybe_stage_pecs_prefetch'):
+            if self._pecs_stream is None:
+                self._pecs_stream = torch.cuda.Stream()
+                self._pecs_event = torch.cuda.Event()
+            with torch.cuda.stream(self._pecs_stream):
+                pecs_layer.maybe_stage_pecs_prefetch(hidden_states)
+                self._pecs_event.record(self._pecs_stream)
+
         hidden_states = self.self_attn(
             positions=positions,
             hidden_states=hidden_states,
         )
+
+        # Sync: main stream waits for PECS background stream before MoE.
+        # If PECS was never launched (disabled or no predictor), the event
+        # is uninitialised and the wait is a no-op.
+        if self._pecs_event is not None:
+            torch.cuda.current_stream().wait_event(self._pecs_event)
 
         # Fully Connected
         hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)

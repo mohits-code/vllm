@@ -422,6 +422,7 @@ class FusedMoE(PluggableLayer):
             confirmed_capacity=vllm_config.parallel_config.pecs_confirmed_capacity,
             predictor_path=vllm_config.parallel_config.pecs_predictor_path,
             predictor_dtype=vllm_config.parallel_config.pecs_predictor_dtype,
+            proposal_confidence_threshold=vllm_config.parallel_config.pecs_proposal_confidence_threshold,
         )
 
         self._init_aiter_shared_experts_topK_buffer(
