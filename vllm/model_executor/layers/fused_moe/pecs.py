@@ -603,27 +603,19 @@ class PecsLayerRuntime:
         combined_expert_tensor = torch.cat(
             [proposal_expert_tensor.flatten(), confirmed_expert_tensor.flatten()]
         )
+        combined_expert_tensor = combined_expert_tensor[combined_expert_tensor >= 0]
+        combined_expert_tensor = _unique_preserve_order(combined_expert_tensor).to(torch.int32)
 
         l2p_gpu = getattr(self, "_gpu_logical_to_physical_map", None)
         if l2p_gpu is not None:
             l2p = l2p_gpu.to(hidden_states.device)
-            valid_mask = (combined_expert_tensor >= 0) & (
-                combined_expert_tensor < l2p.shape[0]
-            )
-            safe_logical = torch.where(
-                valid_mask,
-                combined_expert_tensor,
-                torch.zeros_like(combined_expert_tensor),
-            )
+            valid_mask = combined_expert_tensor < l2p.shape[0]
+            safe_logical = combined_expert_tensor[valid_mask]
 
             phys_candidates = l2p[safe_logical.to(torch.int64)]
-            valid_mask_expanded = valid_mask.unsqueeze(-1).expand_as(phys_candidates)
-            phys_candidates = torch.where(
-                valid_mask_expanded,
-                phys_candidates,
-                torch.full((), -1, device=hidden_states.device, dtype=phys_candidates.dtype),
-            )
             combined_physical_expert_tensor = phys_candidates.flatten().to(torch.int32)
+            combined_physical_expert_tensor = combined_physical_expert_tensor[combined_physical_expert_tensor >= 0]
+            combined_physical_expert_tensor = _unique_preserve_order(combined_physical_expert_tensor)
         else:
             combined_physical_expert_tensor = combined_expert_tensor
 
