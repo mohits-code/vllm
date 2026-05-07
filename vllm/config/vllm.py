@@ -1698,15 +1698,6 @@ class VllmConfig:
         if PECS_PREFETCH_SPLIT_OP not in splitting_ops:
             splitting_ops.append(PECS_PREFETCH_SPLIT_OP)
 
-        if self.compilation_config.cudagraph_mode != CUDAGraphMode.NONE:
-            guarded_mode = CUDAGraphMode.NONE
-            logger.warning_once(
-                "PECS uses dynamic per-batch expert selection and is incompatible "
-                "with CUDA graph replay. Forcing cudagraph_mode=%s.",
-                guarded_mode.name,
-            )
-            self.compilation_config.cudagraph_mode = guarded_mode
-
     def try_verify_and_update_config(self):
         if self.model_config is None:
             return
