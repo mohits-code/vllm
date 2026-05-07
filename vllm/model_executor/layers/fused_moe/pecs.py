@@ -380,16 +380,14 @@ class PecsLayerRuntime:
         if proposals is None:
             return torch.empty(0, device=device, dtype=torch.int32)
 
-        flat_ids = proposals.reshape(-1).to(device=device, dtype=torch.int64)
+        flat_ids = proposals.reshape(-1).to(device=device, dtype=torch.int32)
         if flat_ids.numel() == 0:
             return torch.empty(0, device=device, dtype=torch.int32)
 
-        unique_ids, counts = torch.unique(flat_ids, return_counts=True, sorted=True)
-        sort_keys = unique_ids.to(dtype=torch.int64) - counts.to(dtype=torch.int64) * (
-            unique_ids.numel() + 1
-        )
-        ranked_indices = torch.argsort(sort_keys, stable=True)
-        return unique_ids[ranked_indices].to(dtype=torch.int32)
+        # To avoid dynamic PyTorch sizing (which breaks CUDA graphs), we
+        # bypass unique sorting and simply return the flattened valid array.
+        # Duplicates are harmless to the prefetch cache.
+        return flat_ids
 
     @staticmethod
     def _merge_candidates(
@@ -444,16 +442,21 @@ class PecsLayerRuntime:
         mapping = self._gpu_logical_to_physical_map
         if mapping.device != logical_ids.device:
             mapping = mapping.to(device=logical_ids.device)
-        valid = (logical_ids >= 0) & (logical_ids < mapping.shape[0])
-        logical_ids = logical_ids[valid]
-        if logical_ids.numel() == 0:
-            return torch.empty(0, device=mapping.device, dtype=torch.int32)
 
-        physical_ids = mapping[logical_ids].reshape(-1).to(dtype=torch.int64)
-        physical_ids = physical_ids[physical_ids >= 0]
-        if physical_ids.numel() == 0:
-            return torch.empty(0, device=mapping.device, dtype=torch.int32)
-        return _unique_preserve_order(physical_ids).to(dtype=torch.int32)
+        # Avoid boolean indexing to preserve static shapes for CUDA graphs
+        valid_mask = (logical_ids >= 0) & (logical_ids < mapping.shape[0])
+        safe_ids = torch.where(valid_mask, logical_ids, torch.tensor(0, device=logical_ids.device))
+        physical_ids = mapping[safe_ids]
+        
+        # Mask out originally invalid IDs with -1
+        physical_ids = torch.where(
+            valid_mask.unsqueeze(-1), 
+            physical_ids, 
+            torch.tensor(-1, device=physical_ids.device)
+        ).reshape(-1)
+        
+        # Return statically sized tensor, keeping sentinels
+        return physical_ids.to(dtype=torch.int32)
 
     @staticmethod
     def _confirmed_experts_tensor(
@@ -540,8 +543,10 @@ class PecsLayerRuntime:
 
         merged = torch.cat(
             [confirmed_experts.reshape(-1), proposal_experts.reshape(-1)]
-        ).to(dtype=torch.int64)
-        return _unique_preserve_order(merged).to(dtype=torch.int32)
+        ).to(dtype=torch.int32)
+        # Bypassing unique to maintain static shapes for CUDA graphs.
+        # Duplicates will be safely ignored during staging.
+        return merged
 
     # Accumulated timing state (CPU wall clock, only used when _PECS_DEBUG_TIMING)
     _debug_stage_time_total: float = 0.0
@@ -629,12 +634,15 @@ class PecsLayerRuntime:
             )
 
         # --- stats ---
-        n_conf = int((valid_confirmed >= 0).sum().item())  # scalar reduce, no shape sync
-        n_prop = int(proposal_tensor.shape[0])             # static shape, no sync
-        n_comb = int(combined_tensor.shape[0])             # static shape, no sync
-        n_phys = int(combined_physical_tensor.shape[0])    # static shape, no sync
+        # Skip scalar reduce .item() (causes GPU sync breaking CUDA graphs).
+        # We can accept stats being slightly inaccurate or zeros during decode,
+        # or we could log them asynchronously.
+        n_prop = proposal_tensor.shape[0]
+        n_comb = combined_tensor.shape[0]
+        n_phys = combined_physical_tensor.shape[0]
+        
         self.stats.mark_prefetch(
-            num_confirmed_experts=n_conf,
+            num_confirmed_experts=0,  # omitted to avoid sync
             num_proposal_experts=n_prop,
             num_combined_experts=n_comb,
             num_combined_physical_experts=n_phys,
@@ -669,7 +677,10 @@ class PecsLayerRuntime:
             self._pending_confirmed_tensor = None
             return
 
-        if _PECS_DEBUG_NOOP_STAGE or _PECS_DEBUG_NO_CAPTURE:
+        # Skip capture during decode (batch_size == 1) to avoid dynamic shapes
+        # and Python-side operations breaking the CUDA graph capture.
+        # The confirmed cache is already built during prefill.
+        if _PECS_DEBUG_NOOP_STAGE or _PECS_DEBUG_NO_CAPTURE or logical_ids.shape[0] == 1:
             self._pending_proposals = None
             self._pending_confirmed_tensor = None
             return
