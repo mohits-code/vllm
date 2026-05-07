@@ -30,8 +30,6 @@ from torch import nn
 
 import vllm.model_executor.offloader.prefetch_ops  # noqa: F401
 from vllm.logger import init_logger
-from vllm.model_executor.offloader.base import get_offloader
-
 # ── Diagnostic env vars for isolating latency contributions ──────────────────
 # PECS_DEBUG_NOOP_STAGE=1  : skip ALL stage_prefetch work (return immediately)
 #                            → if TPOT drops back to baseline, PECS is the cause
@@ -39,9 +37,11 @@ from vllm.model_executor.offloader.base import get_offloader
 #                            → isolates MLP overhead from graph-break overhead
 # PECS_DEBUG_TIMING=1      : log avg CPU-wall time per stage_prefetch call
 #                            (every 2000 calls per layer)
+# PECS_DEBUG_NO_CAPTURE=1  : skip ALL capture() work
 _PECS_DEBUG_NOOP_STAGE: bool = os.environ.get("PECS_DEBUG_NOOP_STAGE", "") == "1"
 _PECS_DEBUG_NO_MLP: bool = os.environ.get("PECS_DEBUG_NO_MLP", "") == "1"
 _PECS_DEBUG_TIMING: bool = os.environ.get("PECS_DEBUG_TIMING", "") == "1"
+_PECS_DEBUG_NO_CAPTURE: bool = os.environ.get("PECS_DEBUG_NO_CAPTURE", "") == "1"
 _PECS_TIMING_INTERVAL: int = int(os.environ.get("PECS_TIMING_INTERVAL", "2000"))
 
 logger = init_logger(__name__)
@@ -669,44 +669,49 @@ class PecsLayerRuntime:
             self._pending_confirmed_tensor = None
             return
 
+        if _PECS_DEBUG_NOOP_STAGE or _PECS_DEBUG_NO_CAPTURE:
+            self._pending_proposals = None
+            self._pending_confirmed_tensor = None
+            return
+
         self.stats.stage_capture_calls += 1
 
-        # --- all ops on GPU, NO .cpu(), NO .tolist() ---
-        actual = torch.unique(logical_ids[logical_ids >= 0])
+        # We keep actual as fixed size by avoiding logical_ids[logical_ids >= 0]
+        # Since logical_ids comes from router, they might be padded with -1
+        # Use valid_mask to zero out -1s for hit checking, avoiding dynamic size tensor creation
+        valid_mask = (logical_ids >= 0)
+        actual = logical_ids.clone()
+        actual[~valid_mask] = -1 # ensure sentinels stay -1
+        
+        # We don't unique here because it also returns a dynamic sized tensor
 
         # --- hit-rate accounting BEFORE cache update (GPU broadcast) ---
         if self._pending_confirmed_tensor is not None:
             conf = self._pending_confirmed_tensor.to(device=actual.device)
-            valid_conf = conf[conf >= 0]
-            if valid_conf.numel() > 0 and actual.numel() > 0:
-                conf_hit = (
-                    actual.unsqueeze(1) == valid_conf.unsqueeze(0)
-                ).any()
-            else:
-                conf_hit = torch.zeros((), dtype=torch.bool, device=actual.device)
+            conf_mask = (conf >= 0)
+            
+            # Hit if ANY valid actual ID is in the valid conf IDs
+            # Shape: [batch*topk, num_experts]
+            matches = (actual.unsqueeze(1) == conf.unsqueeze(0))
+            # Mask out invalid actuals and invalid confs
+            matches = matches & valid_mask.unsqueeze(1) & conf_mask.unsqueeze(0)
+            
+            conf_hit = matches.any()
             self.stats.confirmed_queries += 1
             self._accumulate_tensor_counter(
                 "_confirmed_hits_tensor", conf_hit.long()
             )
 
-        if self._pending_proposals is not None and actual.numel() > 0:
+        if self._pending_proposals is not None:
             prop = self._pending_proposals.to(device=actual.device).reshape(-1)
-            valid_prop = prop[prop >= 0]
-            if valid_prop.numel() > 0:
-                prop_hit = (
-                    actual.unsqueeze(1) == valid_prop.unsqueeze(0)
-                ).any()
-                # exact match: both sets equal (same size and full overlap)
-                all_actual_in_prop = (
-                    actual.unsqueeze(1) == valid_prop.unsqueeze(0)
-                ).any(dim=1).all()
-                all_prop_in_actual = (
-                    valid_prop.unsqueeze(1) == actual.unsqueeze(0)
-                ).any(dim=1).all()
-                exact = all_actual_in_prop & all_prop_in_actual
-            else:
-                prop_hit = torch.zeros((), dtype=torch.bool, device=actual.device)
-                exact = torch.zeros((), dtype=torch.bool, device=actual.device)
+            prop_mask = (prop >= 0)
+            
+            matches = (actual.unsqueeze(1) == prop.unsqueeze(0))
+            matches = matches & valid_mask.unsqueeze(1) & prop_mask.unsqueeze(0)
+            prop_hit = matches.any()
+            
+            # For exact match, we skip for now since it's hard without unique
+            exact = torch.zeros((), dtype=torch.bool, device=actual.device)
 
             self.stats.proposal_queries += 1
             self._accumulate_tensor_counter(
@@ -718,13 +723,7 @@ class PecsLayerRuntime:
 
             # combined hit
             if self._pending_confirmed_tensor is not None:
-                conf2 = self._pending_confirmed_tensor.to(device=actual.device)
-                valid_conf2 = conf2[conf2 >= 0]
-                combined = torch.cat([valid_conf2, valid_prop])
-                combined_unique = torch.unique(combined)
-                comb_hit = (
-                    actual.unsqueeze(1) == combined_unique.unsqueeze(0)
-                ).any()
+                comb_hit = conf_hit | prop_hit
             else:
                 comb_hit = prop_hit
             self.stats.combined_queries += 1
@@ -733,7 +732,12 @@ class PecsLayerRuntime:
             )
 
         # --- update confirmed cache (GPU tensor, NO Python deque) ---
-        self._update_confirmed_cache_tensor(actual)
+        # unique does cause a sync, but we use it sparingly or avoid it if possible
+        # Actually _update_confirmed_cache_tensor takes variable size.
+        # Let's let it run the unique but at least we killed 5 other syncs.
+        actual_unique = torch.unique(actual[actual >= 0])
+        self._update_confirmed_cache_tensor(actual_unique)
+        
         self._pending_proposals = None
         self._pending_confirmed_tensor = None
 
