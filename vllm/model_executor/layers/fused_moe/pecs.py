@@ -246,7 +246,6 @@ class PecsLayerRuntime:
         self._pending_proposals: torch.Tensor | None = None
         self._pending_confirmed_snapshot: tuple[int, ...] = ()
         self._pending_confirmed_tensor: torch.Tensor | None = None
-        self._logical_to_physical_map: torch.Tensor | None = None
         self._gpu_logical_to_physical_map: torch.Tensor | None = None
         self._confirmed_cache_tensor: torch.Tensor | None = None
         self._confirmed_hits_tensor: torch.Tensor | None = None
@@ -271,14 +270,12 @@ class PecsLayerRuntime:
     def on_eplb_map_update(self, logical_to_physical_map: torch.Tensor | None) -> None:
         if not self.enabled or logical_to_physical_map is None:
             return
-        self._logical_to_physical_map = (
-            logical_to_physical_map.detach()
-            .to(dtype=torch.int32, device="cpu")
-            .pin_memory()
+        # Keep the map resident on CUDA only — no pinned-CPU copy on the hot path.
+        self._gpu_logical_to_physical_map = logical_to_physical_map.detach().to(
+            device="cuda", dtype=torch.int32
         )
-        self._gpu_logical_to_physical_map = self._logical_to_physical_map.to(
-            device="cuda"
-        )
+        # Signature check: map is small and this is a rare EPLB event, so the
+        # CPU sync here is acceptable.
         signature = tuple(int(x) for x in logical_to_physical_map.reshape(-1).tolist())
         if self._last_map_signature is None:
             self._last_map_signature = signature
@@ -362,19 +359,6 @@ class PecsLayerRuntime:
         )
 
     @staticmethod
-    def _rank_proposal_experts(proposals: torch.Tensor | None) -> tuple[int, ...]:
-        if proposals is None or proposals.numel() == 0:
-            return ()
-
-        flat_ids = proposals.reshape(-1).cpu().to(dtype=torch.int64)
-        unique_ids, counts = torch.unique(flat_ids, return_counts=True, sorted=True)
-        ranked = sorted(
-            zip(unique_ids.tolist(), counts.tolist(), strict=True),
-            key=lambda item: (-item[1], item[0]),
-        )
-        return tuple(int(expert_id) for expert_id, _ in ranked)
-
-    @staticmethod
     def _rank_proposal_experts_tensor(
         proposals: torch.Tensor | None,
         *,
@@ -440,10 +424,13 @@ class PecsLayerRuntime:
             return logical_experts.to(dtype=torch.int32)
 
         logical_ids = logical_experts.to(dtype=torch.long).reshape(-1)
-        if self._logical_to_physical_map is None:
+        # Use the CUDA-resident map directly — no CPU↔GPU transfer.
+        if self._gpu_logical_to_physical_map is None:
             return logical_ids.to(dtype=torch.int32)
 
-        mapping = self._logical_to_physical_map.to(device=logical_ids.device)
+        mapping = self._gpu_logical_to_physical_map
+        if mapping.device != logical_ids.device:
+            mapping = mapping.to(device=logical_ids.device)
         valid = (logical_ids >= 0) & (logical_ids < mapping.shape[0])
         logical_ids = logical_ids[valid]
         if logical_ids.numel() == 0:
@@ -461,20 +448,20 @@ class PecsLayerRuntime:
         *,
         device: torch.device,
     ) -> torch.Tensor:
+        # Allocate directly on the target device — no CPU bounce.
         if not confirmed_experts:
-            res = torch.empty(0, device="cpu", dtype=torch.int32)
-        else:
-            res = torch.tensor(confirmed_experts, device="cpu", dtype=torch.int32)
-        if device.type == "cuda":
-            res = res.pin_memory()
-        return res.to(device=device)
+            return torch.empty(0, device=device, dtype=torch.int32)
+        return torch.tensor(confirmed_experts, device=device, dtype=torch.int32)
 
     def _get_confirmed_cache_tensor(self, *, device: torch.device) -> torch.Tensor:
         if self._confirmed_cache_tensor is None:
             return torch.full(
                 (self.confirmed_capacity,), -1, device=device, dtype=torch.int32
             )
-        return self._confirmed_cache_tensor.to(device=device, dtype=torch.int32)
+        # Cache is already on CUDA; only move if device differs (rare).
+        if self._confirmed_cache_tensor.device != device:
+            self._confirmed_cache_tensor = self._confirmed_cache_tensor.to(device=device)
+        return self._confirmed_cache_tensor
 
     def _accumulate_tensor_counter(
         self,
@@ -526,8 +513,7 @@ class PecsLayerRuntime:
             self._confirmed_cache_tensor = torch.cat(
                 [self._confirmed_cache_tensor, pad]
             )
-        if self._confirmed_cache_tensor.device.type == "cpu":
-            self._confirmed_cache_tensor = self._confirmed_cache_tensor.pin_memory()
+        # Cache stays on CUDA — no pin_memory() needed.
 
     @staticmethod
     def _merge_candidate_tensors(
