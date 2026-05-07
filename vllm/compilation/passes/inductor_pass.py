@@ -19,7 +19,22 @@ from torch._subclasses.fake_tensor import FakeTensorMode, unset_fake_temporarily
 if TYPE_CHECKING:
     from vllm.config.utils import Range
 
-from torch._inductor.custom_graph_pass import CustomGraphPass
+# CustomGraphPass was added in PyTorch 2.6. Provide a no-op shim for older
+# builds (e.g. 2.5.x on Vast.ai nodes) so the module imports without error.
+try:
+    from torch._inductor.custom_graph_pass import CustomGraphPass
+except ImportError:
+    import abc
+
+    class CustomGraphPass(abc.ABC):  # type: ignore[no-redef]
+        """Fallback shim for torch < 2.6 which lacks custom_graph_pass."""
+
+        @abc.abstractmethod
+        def __call__(self, graph: "torch.fx.Graph") -> None: ...
+
+        def uuid(self) -> object:
+            return None
+
 
 _pass_context = None
 P = ParamSpec("P")
