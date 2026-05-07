@@ -999,6 +999,10 @@ class EngineArgs:
             "--pecs-predictor-dtype", **parallel_kwargs["pecs_predictor_dtype"]
         )
         parallel_group.add_argument(
+            "--pecs-proposal-confidence-threshold", 
+            **parallel_kwargs["pecs_proposal_confidence_threshold"]
+        )
+        parallel_group.add_argument(
             "--ubatch-size",
             **parallel_kwargs["ubatch_size"],
         )
