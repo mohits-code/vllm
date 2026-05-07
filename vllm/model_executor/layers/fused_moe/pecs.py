@@ -623,21 +623,48 @@ class PecsLayerRuntime:
             self._pending_confirmed_snapshot = tuple(self._confirmed_cache)
             return
 
-        # To avoid massive GPU-CPU synchronization stalls (which halve throughput),
-        # we only extract the unique experts to update the confirmed cache,
-        # bypassing the per-token statistics calculation during benchmarks.
-        unique_experts = torch.unique(logical_ids[logical_ids >= 0])
-        actual_list = unique_experts.tolist()
+        self.stats.stage_capture_calls += 1
 
-            
+        # One blocking GPU->CPU copy per capture call (unavoidable to update the
+        # confirmed cache deque). We call .tolist() on a small int32 tensor of
+        # unique expert IDs (at most 8 values for Mixtral), not on hidden states.
+        unique_experts = torch.unique(logical_ids[logical_ids >= 0])
+        actual_list: list[int] = unique_experts.tolist()
+        actual_set = set(actual_list)
+
+        # ---- update confirmed cache deque (LRU-style: most recent at front) ----
         for expert in actual_list:
-            if expert < 0:
-                continue
             try:
                 self._confirmed_cache.remove(expert)
             except ValueError:
                 pass
             self._confirmed_cache.appendleft(expert)
+
+        # ---- hit-rate accounting (CPU-only, uses snapshots from stage_prefetch) ----
+        confirmed_snapshot = set(self._pending_confirmed_snapshot or ())
+
+        self.stats.confirmed_queries += 1
+        if actual_set & confirmed_snapshot:
+            self.stats.confirmed_hits += 1
+
+        if self._pending_proposals is not None:
+            # _pending_proposals is already on CPU (pulled in stage_prefetch)
+            proposal_ids_cpu = self._pending_proposals
+            if proposal_ids_cpu.device.type != "cpu":
+                proposal_ids_cpu = proposal_ids_cpu.cpu()
+            proposal_set = set(proposal_ids_cpu.reshape(-1).tolist())
+            proposal_set.discard(-1)
+
+            self.stats.proposal_queries += 1
+            if actual_set & proposal_set:
+                self.stats.proposal_hits += 1
+            if actual_set == proposal_set and len(actual_set) > 0:
+                self.stats.proposal_exact_matches += 1
+
+            combined_set = confirmed_snapshot | proposal_set
+            self.stats.combined_queries += 1
+            if actual_set & combined_set:
+                self.stats.combined_hits += 1
 
         self._pending_proposals = None
         self._pending_confirmed_snapshot = tuple(self._confirmed_cache)
