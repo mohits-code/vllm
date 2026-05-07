@@ -88,8 +88,8 @@ case "$CASE" in
       --pecs-predictor-path "$PECS_PREDICTOR_PATH"
       --pecs-confirmed-capacity "$PECS_CONFIRMED_CAPACITY"
       --pecs-predictor-dtype "$PECS_PREDICTOR_DTYPE"
-      --pecs-proposal-confidence-threshold "$PECS_PROPOSAL_CONFIDENCE_THRESHOLD"
     )
+    optional_flag PECS_PROPOSAL_CONFIDENCE_THRESHOLD --pecs-proposal-confidence-threshold
     ;;
   *)
     echo "Unknown CASE: $CASE" >&2
