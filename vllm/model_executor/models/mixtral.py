@@ -313,7 +313,7 @@ class MixtralDecoderLayer(nn.Module):
         self._pecs_event = torch.cuda.Event()
         _PECS_REGISTRY[id(self)] = (self.block_sparse_moe, self._pecs_stream, self._pecs_event)
 
-    def set_next_layer(self, next_layer: MixtralDecoderLayer) -> None:
+    def set_next_layer(self, next_layer: "MixtralDecoderLayer") -> None:
         self._next_layer = next_layer
 
     def forward(
