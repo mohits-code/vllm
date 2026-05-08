@@ -677,4 +677,8 @@ class MixtralForCausalLM(nn.Module, SupportsLoRA, SupportsPP, MixtureOfExperts):
         return loader.load_weights(weights)
 
     def get_expert_mapping(self) -> list[tuple[str, str, int, str]]:
-        return self.model.get_expert_mapping()
+        mapping = self.model.get_expert_mapping()
+        return [
+            (f"model.{param_name}", weight_name, eid, sid)
+            for param_name, weight_name, eid, sid in mapping
+        ]
