@@ -54,8 +54,13 @@ def pecs_stream_overlap(hidden_states: torch.Tensor, obj_id: int) -> None:
         pecs_layer = getattr(moe, 'experts', None)
         if pecs_layer is not None and hasattr(pecs_layer, 'maybe_stage_pecs_prefetch'):
             with torch.cuda.stream(stream):
+                print(f"DEBUG: Triggering PECS prefetch for layer {getattr(pecs_layer, 'layer_name', 'unknown')}")
                 pecs_layer.maybe_stage_pecs_prefetch(hidden_states)
                 event.record(stream)
+        else:
+            print(f"DEBUG: pecs_layer or method missing for obj_id {obj_id}")
+    else:
+        print(f"DEBUG: obj_id {obj_id} not in _PECS_REGISTRY. Known keys: {list(_PECS_REGISTRY.keys())}")
 
 @pecs_stream_overlap.register_fake
 def _pecs_stream_overlap_fake(hidden_states: torch.Tensor, obj_id: int) -> None:

@@ -557,12 +557,14 @@ class PecsLayerRuntime:
 
     def stage_prefetch(self, hidden_states: torch.Tensor) -> None:
         if not self.enabled:
+            print(f"DEBUG: PECS disabled for {self.layer_name}")
             return
             
         is_compiling = torch.compiler.is_compiling()
         
         if not is_compiling:
             self.stats.stage_calls += 1
+            print(f"DEBUG: stage_prefetch called for {self.layer_name}, total calls: {self.stats.stage_calls}")
 
 
         _t0 = time.perf_counter() if (not is_compiling and _PECS_DEBUG_TIMING) else 0.0
