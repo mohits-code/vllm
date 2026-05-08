@@ -308,12 +308,13 @@ class MixtralDecoderLayer(nn.Module):
         self.post_attention_layernorm = RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
         )
-        # Dedicated CUDA stream and event for overlapping PECS staging with Attention.
-        # PECS fires on _pecs_stream the moment layernorm output is ready;
-        # main stream wait_event() gates the MoE kernel so it only starts after staging is done.
+        # Dedicated CUDA stream and event for overlapping PECS staging.
         self._pecs_stream = torch.cuda.Stream()
         self._pecs_event = torch.cuda.Event()
         _PECS_REGISTRY[id(self)] = (self.block_sparse_moe, self._pecs_stream, self._pecs_event)
+
+    def set_next_layer(self, next_layer: MixtralDecoderLayer) -> None:
+        self._next_layer = next_layer
 
     def forward(
         self,
@@ -321,30 +322,32 @@ class MixtralDecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
     ) -> torch.Tensor:
-        # 1. Fire PECS staging on a background CUDA stream ASAP.
-        # We launch BEFORE input_layernorm to hide the launch overhead.
-        # The Predictor MLP has its own internal norm, so this is safe.
-        torch.ops.vllm.pecs_stream_overlap(hidden_states, id(self))
-
-        # 2. Self Attention
+        # 1. Self Attention
         if residual is None:
             residual = hidden_states
             hidden_states = self.input_layernorm(hidden_states)
         else:
             hidden_states, residual = self.input_layernorm(hidden_states, residual)
 
-        # 3. Run Attention on main stream - hides PECS cost entirely
+        # 2. Run Attention on main stream.
+        # Layer N prefetch was already triggered by Layer N-1 at the end of its MoE.
         hidden_states = self.self_attn(
             positions=positions,
             hidden_states=hidden_states,
         )
 
-        # 4. Wait for PECS background stream before MoE.
+        # 3. Wait for our experts (prefetched during previous layer's MoE + current Attention).
         torch.ops.vllm.pecs_wait_stream(hidden_states, id(self))
 
-        # 5. Fully Connected
+        # 4. MoE Block
         hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
         hidden_states = self.block_sparse_moe(hidden_states)
+        
+        # 5. Lookahead: Trigger prefetch for the NEXT layer during our MoE tail/next Attention.
+        if hasattr(self, '_next_layer'):
+            # We use the current hidden states (output of MoE) as a predictor for next layer.
+            torch.ops.vllm.pecs_stream_overlap(hidden_states, id(self._next_layer))
+
         return hidden_states, residual
 
 
@@ -385,6 +388,12 @@ class MixtralModel(nn.Module):
             prefix=f"{prefix}.layers",
         )
 
+        # Wire up Cross-Layer Prefetching: each layer triggers the next one's staging.
+        # This hides Layer N prefetch behind Layer N-1 MoE compute.
+        layers_list = list(self.layers)
+        for i in range(len(layers_list) - 1):
+            layers_list[i].set_next_layer(layers_list[i+1])
+
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.make_empty_intermediate_tensors = make_empty_intermediate_tensors_factory(
             ["hidden_states", "residual"], config.hidden_size
@@ -410,8 +419,15 @@ class MixtralModel(nn.Module):
             assert intermediate_tensors is not None
             hidden_states = intermediate_tensors["hidden_states"]
             residual = intermediate_tensors["residual"]
+            
+        # Initial prefetch for the first layer in the pipeline stage.
+        first_layer = self.layers[self.start_layer]
+        if hasattr(first_layer, 'block_sparse_moe'):
+             torch.ops.vllm.pecs_stream_overlap(hidden_states, id(first_layer))
+
         for layer in islice(self.layers, self.start_layer, self.end_layer):
             hidden_states, residual = layer(positions, hidden_states, residual)
+            
         if not get_pp_group().is_last_rank:
             return IntermediateTensors(
                 {"hidden_states": hidden_states, "residual": residual}
