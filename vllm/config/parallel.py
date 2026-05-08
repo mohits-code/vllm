@@ -200,11 +200,11 @@ class ParallelConfig:
     """Enable PECS runtime state in MoE layers."""
     pecs_predictor_path: str | None = None
     """Directory containing per-layer PECS predictor checkpoints."""
-    pecs_confirmed_capacity: int = Field(default=2, ge=1)
+    pecs_confirmed_capacity: int = Field(default=4, ge=1)
     """Capacity of the online confirmed expert cache per MoE layer."""
     pecs_predictor_dtype: PecsPredictorDType = "auto"
     """Runtime dtype for frozen PECS predictor weights."""
-    pecs_proposal_confidence_threshold: float = Field(default=0.0, ge=0.0, le=1.0)
+    pecs_proposal_confidence_threshold: float = Field(default=0.4, ge=0.0, le=1.0)
     """Minimum softmax probability for an MLP-predicted expert to be included
     in the pre-staged candidate set. 0.0 disables filtering (all top-k included).
     Values around 0.35-0.45 reduce avg candidates from 4 to ~2 for Mixtral."""
