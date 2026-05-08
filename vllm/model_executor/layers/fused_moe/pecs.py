@@ -543,11 +543,12 @@ class PecsLayerRuntime:
         if proposal_experts.numel() == 0:
             return confirmed_experts
 
+        # Order matters here: Proposals (semantic lookahead) come first to enable 
+        # "Exact" matches on the primary path. Confirmed cache (temporal safety net)
+        # fills the remaining slots.
         merged = torch.cat(
-            [confirmed_experts.reshape(-1), proposal_experts.reshape(-1)]
+            [proposal_experts.reshape(-1), confirmed_experts.reshape(-1)]
         ).to(dtype=torch.int32)
-        # Bypassing unique to maintain static shapes for CUDA graphs.
-        # Duplicates will be safely ignored during staging.
         return merged
 
     # Accumulated timing state (CPU wall clock, only used when _PECS_DEBUG_TIMING)
@@ -621,6 +622,11 @@ class PecsLayerRuntime:
         combined_tensor = self._merge_candidate_tensors(
             valid_confirmed, proposal_tensor,
         )
+        
+        # Enforce strict cap to top_k to control All-to-All amplification
+        if combined_tensor.numel() > self.top_k:
+            combined_tensor = combined_tensor[:self.top_k]
+
         combined_physical_tensor = self._map_logical_candidates_to_physical_tensor(
             combined_tensor,
         )
