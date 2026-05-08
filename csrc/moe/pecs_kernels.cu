@@ -9,15 +9,28 @@ __global__ void pecs_stage_kernel(
     const void** __restrict__ src_ptrs,
     void** __restrict__ dst_ptrs,
     int num_params,
-    int64_t num_int4) {
+    int64_t num_int4,
+    uint32_t* __restrict__ global_bitmask) {
     
-    // Each block in Y dimension handles one (candidate, param) pair
-    int task_id = blockIdx.y;
-    int candidate_idx = task_id / num_params;
-    int param_idx = task_id % num_params;
+    // Each block handles one expert from the candidate list (Y dimension).
+    int candidate_idx = blockIdx.y;
+    int param_idx = blockIdx.z;
 
     int32_t expert_id = expert_ids[candidate_idx];
     if (expert_id < 0) return;
+
+    // Use a global bitmask to deduplicate copies if the same expert is requested multiple times.
+    // The mask is indexed by (param_idx * total_experts_cap + expert_id).
+    // Assuming a reasonable cap like 128 for total_experts_cap.
+    if (blockIdx.x == 0 && threadIdx.x == 0) {
+        uint32_t bit = (1u << (expert_id % 32));
+        uint32_t offset = (param_idx * 128) + (expert_id / 32);
+        if (atomicOr(&global_bitmask[offset], bit) & bit) {
+            // Already being copied by another block, exit.
+            return;
+        }
+    }
+    __syncthreads();
 
     const int4* src_base = (const int4*)src_ptrs[param_idx];
     int4* dst_base = (int4*)dst_ptrs[param_idx];
@@ -26,7 +39,7 @@ __global__ void pecs_stage_kernel(
     const int4* src = src_base + (int64_t)expert_id * num_int4;
     int4* dst = dst_base + (int64_t)expert_id * num_int4;
 
-    // Parallel copy using all threads in the block (and across X dimension blocks if needed)
+    // Parallel copy using all threads in the block
     for (int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x; i < num_int4; i += (int64_t)gridDim.x * blockDim.x) {
         dst[i] = src[i];
     }
@@ -67,10 +80,16 @@ void pecs_stage_experts(
     int64_t expert_bytes = (src_weights[0].numel() / num_experts) * src_weights[0].element_size();
     int64_t num_int4 = expert_bytes / sizeof(int4);
 
+    // Allocate and zero out a bitmask for deduplication (128 bits per parameter)
+    uint32_t* d_bitmask;
+    cudaMallocAsync(&d_bitmask, num_params * (128 / 8), stream);
+    cudaMemsetAsync(d_bitmask, 0, num_params * (128 / 8), stream);
+
     // Launch configuration:
-    // Y dimension = number of copy tasks (candidates * params)
-    // X dimension = blocks to parallelize one copy task
-    dim3 blocks(16, num_candidates * num_params);
+    // Z dimension = parameter index (w1, w2, w3)
+    // Y dimension = candidate index (0..num_candidates-1)
+    // X dimension = parallel blocks per copy task
+    dim3 blocks(16, num_candidates, num_params);
     dim3 threads(256);
 
     pecs_stage_kernel<<<blocks, threads, 0, stream>>>(
@@ -78,9 +97,11 @@ void pecs_stage_experts(
         (const void**)d_src_ptrs,
         (void**)d_dst_ptrs,
         num_params,
-        num_int4
+        num_int4,
+        d_bitmask
     );
 
     cudaFreeAsync(d_src_ptrs, stream);
     cudaFreeAsync(d_dst_ptrs, stream);
+    cudaFreeAsync(d_bitmask, stream);
 }
