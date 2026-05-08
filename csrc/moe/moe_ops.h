@@ -70,4 +70,9 @@ torch::Tensor router_gemm_bf16_fp32(torch::Tensor const& input,
 // Supports num_tokens in [1, 16], num_experts in {256, 384}, hidden_dim = 7168
 void dsv3_router_gemm(torch::Tensor& output, const torch::Tensor& mat_a,
                       const torch::Tensor& mat_b);
+
+void pecs_stage_experts(const torch::Tensor& expert_ids,
+                        const std::vector<torch::Tensor>& src_weights,
+                        const std::vector<torch::Tensor>& dst_buffers,
+                        intptr_t stream_ptr);
 #endif

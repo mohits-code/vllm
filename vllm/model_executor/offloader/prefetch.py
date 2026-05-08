@@ -394,47 +394,75 @@ class PrefetchOffloader(BaseOffloader):
                     num_experts=int(binding.moe_layer.local_num_experts),
                 )
             else:
+                # Ensure expert_map is on the same device as IDs for fast indexing
                 expert_map = binding.moe_layer.expert_map.to(
-                    device=requested_expert_ids.device
-                )
+                    device=requested_expert_ids.device)
                 local_expert_ids_tensor = expert_map[
-                    requested_expert_ids.to(dtype=torch.long).reshape(-1)
-                ]
+                    requested_expert_ids.to(dtype=torch.long).reshape(-1)]
                 local_expert_ids_tensor = _normalize_expert_id_tensor(
                     local_expert_ids_tensor,
                     num_experts=int(binding.moe_layer.local_num_experts),
                 )
+
             if local_expert_ids_tensor.numel() == 0:
                 return
-            local_expert_ids = tuple(
-                int(expert_id)
-                for expert_id in local_expert_ids_tensor.to(
-                    device="cpu", dtype=torch.int64
-                ).tolist()
-            )
+
+            # FUSED C++ STAGING PATH: No .tolist(), no .cpu()!
+            # Collect all parameter slices to stage
+            src_weights: list[torch.Tensor] = []
+            dst_buffers: list[torch.Tensor] = []
+
+            param_prefix = binding.param_prefix
+            prefix = f"{param_prefix}." if param_prefix else ""
+            num_experts = int(binding.moe_layer.local_num_experts)
+
+            for name, offloader in binding.module_offloader._param_offloaders.items(
+            ):
+                if prefix:
+                    if not name.startswith(prefix):
+                        continue
+                elif "." in name:
+                    continue
+
+                cpu_storage = offloader._cpu_storage
+                gpu_buffer = offloader._gpu_buffer
+                if cpu_storage is None or gpu_buffer is None:
+                    continue
+                if cpu_storage.ndim == 0 or cpu_storage.shape[0] != num_experts:
+                    continue
+
+                src_weights.append(cpu_storage)
+                dst_buffers.append(gpu_buffer)
+
+            if src_weights:
+                # Dispatch to C++ for high-speed async staging
+                torch.ops._moe_C.pecs_stage_experts(
+                    local_expert_ids_tensor.to(dtype=torch.int32), src_weights,
+                    dst_buffers, self.copy_stream.cuda_stream)
+
+                logger.debug(
+                    "PECS staged %d expert(s) via C++ fused op for %s",
+                    local_expert_ids_tensor.numel(), layer_name)
         else:
+            # Fallback for non-tensor IDs (rare in hot path)
             local_expert_ids = _normalize_expert_ids(
                 tuple(
-                    binding.moe_layer._map_global_expert_id_to_local_expert_id(expert_id)
-                    for expert_id in requested_expert_ids
-                ),
+                    binding.moe_layer._map_global_expert_id_to_local_expert_id(
+                        expert_id) for expert_id in requested_expert_ids),
                 num_experts=int(binding.moe_layer.local_num_experts),
             )
             if not local_expert_ids:
                 return
 
-        copied_params = binding.module_offloader.stage_expert_slices(
-            param_prefix=binding.param_prefix,
-            local_expert_ids=local_expert_ids,
-            num_experts=int(binding.moe_layer.local_num_experts),
-        )
-        if copied_params:
-            logger.debug(
-                "PECS staged %d local expert(s) across %d param(s) for %s",
-                len(local_expert_ids),
-                copied_params,
-                layer_name,
+            copied_params = binding.module_offloader.stage_expert_slices(
+                param_prefix=binding.param_prefix,
+                local_expert_ids=local_expert_ids,
+                num_experts=int(binding.moe_layer.local_num_experts),
             )
+            if copied_params:
+                logger.debug(
+                    "PECS staged %d local expert(s) across %d param(s) for %s",
+                    len(local_expert_ids), copied_params, layer_name)
 
     def join_after_forward(self):
         """Join copy_stream after model forward completes.

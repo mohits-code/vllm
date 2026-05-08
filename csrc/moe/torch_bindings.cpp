@@ -132,6 +132,11 @@ TORCH_LIBRARY_EXPAND(TORCH_EXTENSION_NAME, m) {
   // DeepSeek V3 optimized router GEMM for SM90+
   m.def("dsv3_router_gemm(Tensor! output, Tensor mat_a, Tensor mat_b) -> ()");
   // conditionally compiled so impl registration is in source file
+
+  m.def(
+      "pecs_stage_experts(Tensor expert_ids, Tensor[] src_weights, Tensor[] "
+      "dst_buffers, int stream_ptr) -> ()");
+  m.impl("pecs_stage_experts", torch::kCUDA, &pecs_stage_experts);
 #endif
 }
 
