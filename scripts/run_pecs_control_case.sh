@@ -90,6 +90,13 @@ case "$CASE" in
       --pecs-predictor-dtype "$PECS_PREDICTOR_DTYPE"
     )
     optional_flag PECS_PROPOSAL_CONFIDENCE_THRESHOLD --pecs-proposal-confidence-threshold
+    
+    # New flags for Sem-MoE Proxy and Telemetry
+    if [[ "${VLLM_ENABLE_PECS_SEM_MOE_MODE:-}" == "1" ]]; then
+      cmd+=(--enable-pecs-sem-moe-mode)
+    fi
+    optional_flag VLLM_PECS_SEM_MOE_TABLE --pecs-sem-moe-table-path
+    optional_flag VLLM_PECS_TELEMETRY --pecs-telemetry-path
     ;;
   *)
     echo "Unknown CASE: $CASE" >&2

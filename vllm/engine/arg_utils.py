@@ -447,6 +447,9 @@ class EngineArgs:
     pecs_predictor_path: str | None = ParallelConfig.pecs_predictor_path
     pecs_confirmed_capacity: int = ParallelConfig.pecs_confirmed_capacity
     pecs_predictor_dtype: str = ParallelConfig.pecs_predictor_dtype
+    pecs_telemetry_path: str | None = ParallelConfig.pecs_telemetry_path
+    enable_pecs_sem_moe_mode: bool = ParallelConfig.enable_pecs_sem_moe_mode
+    pecs_sem_moe_table_path: str | None = ParallelConfig.pecs_sem_moe_table_path
     dbo_decode_token_threshold: int = ParallelConfig.dbo_decode_token_threshold
     dbo_prefill_token_threshold: int = ParallelConfig.dbo_prefill_token_threshold
     disable_nccl_for_dp_synchronization: bool | None = (
@@ -997,6 +1000,15 @@ class EngineArgs:
         )
         parallel_group.add_argument(
             "--pecs-predictor-dtype", **parallel_kwargs["pecs_predictor_dtype"]
+        )
+        parallel_group.add_argument(
+            "--pecs-telemetry-path", **parallel_kwargs["pecs_telemetry_path"]
+        )
+        parallel_group.add_argument(
+            "--enable-pecs-sem-moe-mode", **parallel_kwargs["enable_pecs_sem_moe_mode"]
+        )
+        parallel_group.add_argument(
+            "--pecs-sem-moe-table-path", **parallel_kwargs["pecs_sem_moe_table_path"]
         )
         parallel_group.add_argument(
             "--pecs-proposal-confidence-threshold", 
@@ -1876,6 +1888,9 @@ class EngineArgs:
             pecs_predictor_path=self.pecs_predictor_path,
             pecs_confirmed_capacity=self.pecs_confirmed_capacity,
             pecs_predictor_dtype=self.pecs_predictor_dtype,
+            pecs_telemetry_path=self.pecs_telemetry_path,
+            enable_pecs_sem_moe_mode=self.enable_pecs_sem_moe_mode,
+            pecs_sem_moe_table_path=self.pecs_sem_moe_table_path,
             dbo_decode_token_threshold=self.dbo_decode_token_threshold,
             dbo_prefill_token_threshold=self.dbo_prefill_token_threshold,
             disable_nccl_for_dp_synchronization=self.disable_nccl_for_dp_synchronization,

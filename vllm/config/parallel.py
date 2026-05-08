@@ -208,6 +208,12 @@ class ParallelConfig:
     """Minimum softmax probability for an MLP-predicted expert to be included
     in the pre-staged candidate set. 0.0 disables filtering (all top-k included).
     Values around 0.35-0.45 reduce avg candidates from 4 to ~2 for Mixtral."""
+    enable_pecs_sem_moe_mode: bool = False
+    """Enable Sem-MoE Proxy mode (Static profiling, no online adaptivity)."""
+    pecs_sem_moe_table_path: str | None = None
+    """Path to the pre-trained static expert-to-device mapping for Sem-MoE."""
+    pecs_telemetry_path: str | None = None
+    """Directory to save high-resolution time-series performance telemetry."""
 
     dbo_decode_token_threshold: int = 32
     """The threshold for dual batch overlap for batches only containing decodes.

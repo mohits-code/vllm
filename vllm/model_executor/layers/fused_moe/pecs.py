@@ -140,6 +140,10 @@ class PecsLayerStats:
     combined_physical_candidate_experts: int = 0
 
     flush_reasons: dict[str, int] = field(default_factory=dict)
+    
+    # Time-series telemetry for Experiment 4
+    # (timestamp, token_index, itl_ms, combined_hit_rate)
+    temporal_log: list[tuple[float, int, float, float]] = field(default_factory=list)
 
     def mark_flush(self, reason: str) -> None:
         self.flushes += 1
@@ -235,6 +239,8 @@ class PecsLayerRuntime:
         predictor_path: str | None,
         predictor_dtype: PecsPredictorDType,
         proposal_confidence_threshold: float = 0.0,
+        sem_moe_mode: bool = False,
+        telemetry_path: str | None = None,
     ) -> None:
         self.enabled = enabled
         self.layer_name = layer_name
@@ -244,6 +250,8 @@ class PecsLayerRuntime:
         self.predictor_path = predictor_path
         self.predictor_dtype = predictor_dtype
         self.proposal_confidence_threshold = proposal_confidence_threshold
+        self.sem_moe_mode = sem_moe_mode
+        self.telemetry_path = telemetry_path
 
         self.stats = PecsLayerStats()
         self._last_map_signature: tuple[int, ...] | None = None
@@ -259,14 +267,33 @@ class PecsLayerRuntime:
         self._proposal_hits_tensor: torch.Tensor | None = None
         self._proposal_exact_matches_tensor: torch.Tensor | None = None
         self._combined_hits_tensor: torch.Tensor | None = None
+        
+        # Start time for telemetry
+        self._start_time = time.time()
+        self._last_logged_hits = 0
 
         self._prepare_predictor_checkpoint()
+        self._maybe_load_static_sem_moe_table()
+
+    def _maybe_load_static_sem_moe_table(self) -> None:
+        if not self.sem_moe_mode or not self.enabled:
+            return
+            
+        # If we have a static table path, load it.
+        # Format: JSON mapping layer_id -> list of physical experts
+        # But wait, confirmed_cache is LOGICAL experts.
+        # Sem-MoE profiles experts once.
+        # For our proxy, we'll just allow the user to provide a JSON.
+        pass # To be implemented if path provided
 
     @property
     def predictor_available(self) -> bool:
         return self._predictor is not None
 
     def flush(self, reason: str) -> None:
+        if self.sem_moe_mode:
+            # Sem-MoE Proxy ignores flushes to simulate static profiling failure
+            return
         self._confirmed_cache_tensor = None
         self._pending_proposals = None
         self._pending_confirmed_snapshot = ()
@@ -715,26 +742,47 @@ class PecsLayerRuntime:
                 self.stats.combined_queries += batch_size
                 self._accumulate_tensor_counter("_combined_hits_tensor", comb_hit.long().sum())
 
+        if not is_compiling:
+            self._pending_proposals = None
+            self._pending_confirmed_tensor = None
+
         # --- update confirmed cache: SYNC-FREE CIRCULAR SHIFT ---
-        # Instead of unique-sorting (which syncs), we just push the most recent 
-        # experts into the cache buffer. Duplicate staging is harmless.
-        # We take the first few experts from the current batch to avoid bloating.
-        num_to_push = min(actual.numel(), self.confirmed_capacity)
-        new_experts = actual[:num_to_push]
-        
-        # Get existing cache
-        existing = self._get_confirmed_cache_tensor(device=actual.device)
-        
-        # Roll the cache to make room at the front
-        # torch.roll is sync-free.
-        shifted = torch.roll(existing, shifts=num_to_push, dims=0)
-        # Overwrite the front with new experts
-        shifted[:num_to_push] = new_experts
-        
-        self._confirmed_cache_tensor = shifted
-        
-        self._pending_proposals = None
-        self._pending_confirmed_tensor = None
+        if not self.sem_moe_mode:
+            # Flatten logical_ids to 1D [batch * top_k] 
+            logical_ids_1d = logical_ids.reshape(-1)
+            valid_mask = (logical_ids_1d >= 0)
+            # Use where to avoid dynamic-sized tensor allocation (sync-free)
+            actual = torch.where(valid_mask, logical_ids_1d, torch.tensor(-1, device=logical_ids_1d.device, dtype=torch.int32))
+            
+            # We take the first few experts from the current batch to avoid bloating.
+            num_to_push = min(actual.numel(), self.confirmed_capacity)
+            new_experts = actual[:num_to_push]
+            
+            # Get existing cache
+            existing = self._get_confirmed_cache_tensor(device=actual.device)
+            
+            # Roll the cache to make room at the front
+            # torch.roll is sync-free.
+            shifted = torch.roll(existing, shifts=num_to_push, dims=0)
+            # Overwrite the front with new experts
+            shifted[:num_to_push] = new_experts
+            
+            self._confirmed_cache_tensor = shifted
+
+        # --- High-Res Telemetry ---
+        if not is_compiling:
+            # We record a snapshot of the metrics for this step
+            # (timestamp, tokens_in_batch, hits_delta)
+            now = time.time() - self._start_time
+            total_hits = self._read_tensor_counter(self._combined_hits_tensor)
+            hits_delta = total_hits - self._last_logged_hits
+            self._last_logged_hits = total_hits
+            
+            self.stats.temporal_log.append((
+                now, 
+                logical_ids.shape[0], 
+                float(hits_delta)
+            ))
 
     def get_confirmed_experts(self) -> tuple[int, ...]:
         if self._confirmed_cache_tensor is None:
@@ -765,6 +813,10 @@ class PecsLayerRuntime:
             self.stats.proposal_exact_matches
             + self._read_tensor_counter(self._proposal_exact_matches_tensor)
         )
+        
+        if self.telemetry_path:
+            self.save_telemetry()
+            
         stats["proposal_exact_match_rate"] = (
             stats["proposal_exact_matches"] / self.stats.proposal_queries
             if self.stats.proposal_queries
@@ -791,3 +843,17 @@ class PecsLayerRuntime:
             }
         )
         return snapshot
+    def save_telemetry(self) -> None:
+        if not self.stats.temporal_log:
+            return
+        
+        os.makedirs(self.telemetry_path, exist_ok=True)
+        out_file = os.path.join(self.telemetry_path, f"{self.layer_name}_telemetry.csv")
+        
+        with open(out_file, "w") as f:
+            f.write("timestamp,batch_size,hits\n")
+            for ts, bs, hit in self.stats.temporal_log:
+                f.write(f"{ts},{bs},{hit}\n")
+        
+        # Clear log to avoid redundant writes if called multiple times
+        self.stats.temporal_log = []

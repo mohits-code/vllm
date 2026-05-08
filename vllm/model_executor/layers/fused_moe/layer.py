@@ -423,6 +423,8 @@ class FusedMoE(PluggableLayer):
             predictor_path=vllm_config.parallel_config.pecs_predictor_path,
             predictor_dtype=vllm_config.parallel_config.pecs_predictor_dtype,
             proposal_confidence_threshold=vllm_config.parallel_config.pecs_proposal_confidence_threshold,
+            sem_moe_mode=vllm_config.parallel_config.enable_pecs_sem_moe_mode,
+            telemetry_path=vllm_config.parallel_config.pecs_telemetry_path,
         )
 
         self._init_aiter_shared_experts_topK_buffer(

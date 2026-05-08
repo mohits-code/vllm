@@ -252,6 +252,9 @@ class LLM:
         | OnlineQuantizationConfigArgs
         | None = None,
         logits_processors: list[str | type[LogitsProcessor]] | None = None,
+        pecs_telemetry_path: str | None = None,
+        enable_pecs_sem_moe_mode: bool = False,
+        pecs_sem_moe_table_path: str | None = None,
         **kwargs: Any,
     ) -> None:
         """LLM constructor."""
@@ -373,6 +376,9 @@ class LLM:
             compilation_config=compilation_config_instance,
             quantization_config=quantization_config,
             logits_processors=logits_processors,
+            pecs_telemetry_path=pecs_telemetry_path,
+            enable_pecs_sem_moe_mode=enable_pecs_sem_moe_mode,
+            pecs_sem_moe_table_path=pecs_sem_moe_table_path,
             **kwargs,
         )
 
