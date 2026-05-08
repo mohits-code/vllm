@@ -88,13 +88,6 @@ def _parse_layer_id(layer_name: str) -> int | None:
     return None
 
 
-def _unique_preserve_order(values: torch.Tensor) -> torch.Tensor:
-    if values.numel() == 0:
-        return values
-    flat_values = values.reshape(-1)
-    eq = flat_values.unsqueeze(0) == flat_values.unsqueeze(1)
-    seen_before = torch.triu(eq, diagonal=1).any(dim=0)
-    return flat_values[~seen_before]
 
 
 class FrozenMLPPredictor(nn.Module):
@@ -253,7 +246,6 @@ class PecsLayerRuntime:
         self.proposal_confidence_threshold = proposal_confidence_threshold
 
         self.stats = PecsLayerStats()
-        self._confirmed_cache: deque[int] = deque(maxlen=max(confirmed_capacity, 1))
         self._last_map_signature: tuple[int, ...] | None = None
         self._predictor: FrozenMLPPredictor | None = None
         self._predictor_loaded = False
@@ -275,7 +267,6 @@ class PecsLayerRuntime:
         return self._predictor is not None
 
     def flush(self, reason: str) -> None:
-        self._confirmed_cache.clear()
         self._confirmed_cache_tensor = None
         self._pending_proposals = None
         self._pending_confirmed_snapshot = ()
@@ -501,37 +492,6 @@ class PecsLayerRuntime:
             return 0
         return int(counter.item())
 
-    def _update_confirmed_cache_tensor(self, actual: torch.Tensor) -> None:
-        recent = actual.reshape(-1).to(dtype=torch.int64)
-        recent = recent[recent >= 0]
-        if recent.numel() > 0:
-            recent = _unique_preserve_order(recent.flip(0))
-
-        existing = self._get_confirmed_cache_tensor(device=actual.device).to(
-            dtype=torch.int64
-        )
-        if recent.numel() == 0:
-            updated = existing
-        elif existing.numel() == 0:
-            updated = recent
-        else:
-            keep_existing = ~(existing.unsqueeze(1) == recent.unsqueeze(0)).any(dim=1)
-            updated = torch.cat([recent, existing[keep_existing]], dim=0)
-
-        self._confirmed_cache_tensor = updated[: self.confirmed_capacity].to(
-            dtype=torch.int32
-        )
-        if self._confirmed_cache_tensor.numel() < self.confirmed_capacity:
-            pad = torch.full(
-                (self.confirmed_capacity - self._confirmed_cache_tensor.numel(),),
-                -1,
-                dtype=torch.int32,
-                device=self._confirmed_cache_tensor.device,
-            )
-            self._confirmed_cache_tensor = torch.cat(
-                [self._confirmed_cache_tensor, pad]
-            )
-        # Cache stays on CUDA — no pin_memory() needed.
 
     @staticmethod
     def _merge_candidate_tensors(
@@ -696,63 +656,43 @@ class PecsLayerRuntime:
                 self._pending_confirmed_tensor = None
                 return
 
-            # Skip capture during decode (batch_size == 1) to avoid dynamic shapes
-            # and Python-side operations breaking the CUDA graph capture.
-            # The confirmed cache is already built during prefill.
-            if _PECS_DEBUG_NOOP_STAGE or _PECS_DEBUG_NO_CAPTURE or logical_ids.shape[0] == 1:
+            # Skip capture during decode (batch_size == 1) if needed, 
+            # but keep it sync-free.
+            if _PECS_DEBUG_NOOP_STAGE or _PECS_DEBUG_NO_CAPTURE:
                 self._pending_proposals = None
                 self._pending_confirmed_tensor = None
                 return
 
             self.stats.stage_capture_calls += 1
 
-        # Flatten logical_ids to 1D [batch * top_k] before masking and broadcasting
+        # Flatten logical_ids to 1D [batch * top_k] 
         logical_ids_1d = logical_ids.reshape(-1)
-
-        # We keep actual as fixed size by avoiding logical_ids[logical_ids >= 0]
-        # Use valid_mask to zero out -1s for hit checking, avoiding dynamic size tensor creation
         valid_mask = (logical_ids_1d >= 0)
-        # Using torch.where is safer and faster than boolean assignment to avoid syncs
-        actual = torch.where(valid_mask, logical_ids_1d, torch.tensor(-1, device=logical_ids_1d.device))
+        # Use where to avoid dynamic-sized tensor allocation (sync-free)
+        actual = torch.where(valid_mask, logical_ids_1d, torch.tensor(-1, device=logical_ids_1d.device, dtype=torch.int32))
         
-        # We don't unique here because it also returns a dynamic sized tensor
-
         # --- hit-rate accounting BEFORE cache update (GPU broadcast) ---
         if not is_compiling:
             if self._pending_confirmed_tensor is not None:
                 conf = self._pending_confirmed_tensor.to(device=actual.device)
-                conf_mask = (conf >= 0)
-                
                 # Hit if ANY valid actual ID is in the valid conf IDs
-                # Shape: [batch*topk, num_experts]
+                # We use a matrix comparison and .any() which is sync-free (returns 0D tensor)
                 matches = (actual.unsqueeze(1) == conf.unsqueeze(0))
-                # Mask out invalid actuals and invalid confs
-                matches = matches & valid_mask.unsqueeze(1) & conf_mask.unsqueeze(0)
+                # Sentinel is -1, so (actual >= 0) & (conf >= 0) filters them
+                valid_matches = matches & (actual.unsqueeze(1) >= 0) & (conf.unsqueeze(0) >= 0)
+                conf_hit = valid_matches.any()
                 
-                conf_hit = matches.any()
                 self.stats.confirmed_queries += 1
-                self._accumulate_tensor_counter(
-                    "_confirmed_hits_tensor", conf_hit.long()
-                )
+                self._accumulate_tensor_counter("_confirmed_hits_tensor", conf_hit.long())
 
             if self._pending_proposals is not None:
                 prop = self._pending_proposals.to(device=actual.device).reshape(-1)
-                prop_mask = (prop >= 0)
-                
                 matches = (actual.unsqueeze(1) == prop.unsqueeze(0))
-                matches = matches & valid_mask.unsqueeze(1) & prop_mask.unsqueeze(0)
-                prop_hit = matches.any()
+                valid_matches = matches & (actual.unsqueeze(1) >= 0) & (prop.unsqueeze(0) >= 0)
+                prop_hit = valid_matches.any()
                 
-                # For exact match, we skip for now since it's hard without unique
-                exact = torch.zeros((), dtype=torch.bool, device=actual.device)
-
                 self.stats.proposal_queries += 1
-                self._accumulate_tensor_counter(
-                    "_proposal_hits_tensor", prop_hit.long()
-                )
-                self._accumulate_tensor_counter(
-                    "_proposal_exact_matches_tensor", exact.long()
-                )
+                self._accumulate_tensor_counter("_proposal_hits_tensor", prop_hit.long())
 
                 # combined hit
                 if self._pending_confirmed_tensor is not None:
@@ -760,22 +700,35 @@ class PecsLayerRuntime:
                 else:
                     comb_hit = prop_hit
                 self.stats.combined_queries += 1
-                self._accumulate_tensor_counter(
-                    "_combined_hits_tensor", comb_hit.long()
-                )
+                self._accumulate_tensor_counter("_combined_hits_tensor", comb_hit.long())
 
-        # --- update confirmed cache (GPU tensor, NO Python deque) ---
-        # unique does cause a sync, but we use it sparingly or avoid it if possible
-        # Actually _update_confirmed_cache_tensor takes variable size.
-        # Let's let it run the unique but at least we killed 5 other syncs.
-        actual_unique = torch.unique(actual[actual >= 0])
-        self._update_confirmed_cache_tensor(actual_unique)
+        # --- update confirmed cache: SYNC-FREE CIRCULAR SHIFT ---
+        # Instead of unique-sorting (which syncs), we just push the most recent 
+        # experts into the cache buffer. Duplicate staging is harmless.
+        # We take the first few experts from the current batch to avoid bloating.
+        num_to_push = min(actual.numel(), self.confirmed_capacity)
+        new_experts = actual[:num_to_push]
+        
+        # Get existing cache
+        existing = self._get_confirmed_cache_tensor(device=actual.device)
+        
+        # Roll the cache to make room at the front
+        # torch.roll is sync-free.
+        shifted = torch.roll(existing, shifts=num_to_push, dims=0)
+        # Overwrite the front with new experts
+        shifted[:num_to_push] = new_experts
+        
+        self._confirmed_cache_tensor = shifted
         
         self._pending_proposals = None
         self._pending_confirmed_tensor = None
 
     def get_confirmed_experts(self) -> tuple[int, ...]:
-        return tuple(self._confirmed_cache)
+        if self._confirmed_cache_tensor is None:
+            return ()
+        # Note: This causes a GPU sync; should only be used for inspection/logging.
+        ids = self._confirmed_cache_tensor.cpu().tolist()
+        return tuple(i for i in ids if i >= 0)
 
     def snapshot(self) -> dict[str, object]:
         stats = self.stats.as_dict()
