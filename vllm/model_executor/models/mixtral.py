@@ -321,17 +321,17 @@ class MixtralDecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         residual: torch.Tensor | None,
     ) -> torch.Tensor:
-        # Self Attention
+        # 1. Fire PECS staging on a background CUDA stream ASAP.
+        # We launch BEFORE input_layernorm to hide the launch overhead.
+        # The Predictor MLP has its own internal norm, so this is safe.
+        torch.ops.vllm.pecs_stream_overlap(hidden_states, id(self))
+
+        # 2. Self Attention
         if residual is None:
             residual = hidden_states
             hidden_states = self.input_layernorm(hidden_states)
         else:
             hidden_states, residual = self.input_layernorm(hidden_states, residual)
-
-        # 2. Fire PECS staging on a background CUDA stream.
-        # We use a custom op to bypass Dynamo tracing and execute the Python
-        # logic during graph replay.
-        torch.ops.vllm.pecs_stream_overlap(hidden_states, id(self))
 
         # 3. Run Attention on main stream - hides PECS cost entirely
         hidden_states = self.self_attn(

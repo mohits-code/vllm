@@ -673,34 +673,47 @@ class PecsLayerRuntime:
         
         # --- hit-rate accounting BEFORE cache update (GPU broadcast) ---
         if not is_compiling:
-            if self._pending_confirmed_tensor is not None:
-                conf = self._pending_confirmed_tensor.to(device=actual.device)
-                # Hit if ANY valid actual ID is in the valid conf IDs
-                # We use a matrix comparison and .any() which is sync-free (returns 0D tensor)
-                matches = (actual.unsqueeze(1) == conf.unsqueeze(0))
-                # Sentinel is -1, so (actual >= 0) & (conf >= 0) filters them
-                valid_matches = matches & (actual.unsqueeze(1) >= 0) & (conf.unsqueeze(0) >= 0)
-                conf_hit = valid_matches.any()
-                
-                self.stats.confirmed_queries += 1
-                self._accumulate_tensor_counter("_confirmed_hits_tensor", conf_hit.long())
-
             if self._pending_proposals is not None:
-                prop = self._pending_proposals.to(device=actual.device).reshape(-1)
-                matches = (actual.unsqueeze(1) == prop.unsqueeze(0))
-                valid_matches = matches & (actual.unsqueeze(1) >= 0) & (prop.unsqueeze(0) >= 0)
-                prop_hit = valid_matches.any()
+                prop = self._pending_proposals.to(device=actual.device)
+                prop_flat = prop.reshape(-1)
                 
-                self.stats.proposal_queries += 1
-                self._accumulate_tensor_counter("_proposal_hits_tensor", prop_hit.long())
+                # Per-token hit: ANY predicted expert for this token is in the routed set?
+                # Actually, our stats are currently tracking if ANY expert in the BATCH hit.
+                # Let's move to per-token hit rate.
+                
+                # logical_ids: [batch, top_k]
+                # prop: [batch, top_k]
+                # Match if routed[i, j] in prop[i, :]
+                match_matrix = (logical_ids.unsqueeze(-1) == prop.unsqueeze(1))
+                # match_matrix: [batch, top_k_routed, top_k_predicted]
+                token_hit = match_matrix.any(dim=-1).any(dim=-1) # [batch]
+                
+                # Exact match: sorted(routed[i, :]) == sorted(prop[i, :])
+                routed_sorted, _ = torch.sort(logical_ids, dim=-1)
+                prop_sorted, _ = torch.sort(prop, dim=-1)
+                token_exact = (routed_sorted == prop_sorted).all(dim=-1) # [batch]
 
-                # combined hit
+                batch_size = logical_ids.shape[0]
+                self.stats.proposal_queries += batch_size
+                self._accumulate_tensor_counter("_proposal_hits_tensor", token_hit.long().sum())
+                self._accumulate_tensor_counter("_proposal_exact_matches_tensor", token_exact.long().sum())
+
+                # combined hit (per token)
                 if self._pending_confirmed_tensor is not None:
-                    comb_hit = conf_hit | prop_hit
+                    conf = self._pending_confirmed_tensor.to(device=actual.device)
+                    # conf is [capacity]
+                    conf_match = (logical_ids.unsqueeze(-1) == conf.unsqueeze(0).unsqueeze(0))
+                    conf_hit = conf_match.any(dim=-1).any(dim=-1) # [batch]
+                    
+                    self.stats.confirmed_queries += batch_size
+                    self._accumulate_tensor_counter("_confirmed_hits_tensor", conf_hit.long().sum())
+                    
+                    comb_hit = conf_hit | token_hit
                 else:
-                    comb_hit = prop_hit
-                self.stats.combined_queries += 1
-                self._accumulate_tensor_counter("_combined_hits_tensor", comb_hit.long())
+                    comb_hit = token_hit
+                
+                self.stats.combined_queries += batch_size
+                self._accumulate_tensor_counter("_combined_hits_tensor", comb_hit.long().sum())
 
         # --- update confirmed cache: SYNC-FREE CIRCULAR SHIFT ---
         # Instead of unique-sorting (which syncs), we just push the most recent 
