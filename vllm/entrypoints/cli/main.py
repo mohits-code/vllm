@@ -55,6 +55,11 @@ def main():
     parser = FlexibleArgumentParser(
         description="vLLM CLI",
         usage="vllm <command> [<args>]",
+    )
+    parser.add_argument(
+        "-v",
+        "--version",
+        action="version",
         version=version,
     )
     subparsers = parser.add_subparsers(required=False, dest="subparser")
