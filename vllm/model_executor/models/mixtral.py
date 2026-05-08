@@ -513,6 +513,12 @@ class MixtralModel(nn.Module):
                     ) and name_mapped not in params_dict:
                         continue
 
+                    if name_mapped not in params_dict:
+                        print(f"DEBUG: KeyError for {name_mapped}. Available keys (first 10): {list(params_dict.keys())[:10]}")
+                        # Fallback: try adding model. prefix if missing
+                        if f"model.{name_mapped}" in params_dict:
+                             name_mapped = f"model.{name_mapped}"
+                    
                     param = params_dict[name_mapped]
                     weight_loader = typing.cast(
                         Callable[..., bool], param.weight_loader
