@@ -50,15 +50,15 @@ def main():
                 "Unspecified platform detected, switching to CPU Platform instead."
             )
 
+    try:
+        version = importlib.metadata.version("vllm")
+    except importlib.metadata.PackageNotFoundError:
+        version = "dev"
+
     parser = FlexibleArgumentParser(
         description="vLLM CLI",
-        epilog=VLLM_SUBCMD_PARSER_EPILOG.format(subcmd="[subcommand]"),
-    )
-    parser.add_argument(
-        "-v",
-        "--version",
-        action="version",
-        version=importlib.metadata.version("vllm"),
+        usage="vllm <command> [<args>]",
+        version=version,
     )
     subparsers = parser.add_subparsers(required=False, dest="subparser")
     cmds = {}
