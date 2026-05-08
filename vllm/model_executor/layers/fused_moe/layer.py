@@ -1560,7 +1560,9 @@ class FusedMoE(PluggableLayer):
     def _capture_pecs_logical_ids(self, logical_ids: torch.Tensor) -> None:
         self.pecs.capture(logical_ids)
 
+    @torch.compiler.disable
     def maybe_stage_pecs_prefetch(self, hidden_states: torch.Tensor) -> None:
+        print(f"DEBUG: PECS stage_prefetch called for layer {getattr(self, 'layer_name', 'unknown')}")
         self.pecs.stage_prefetch(hidden_states)
 
     def get_pecs_stats(self) -> dict[str, object]:

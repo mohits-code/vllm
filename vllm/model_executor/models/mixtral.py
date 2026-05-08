@@ -34,42 +34,8 @@ from transformers import MixtralConfig
 
 import torch.library
 
-_PECS_REGISTRY: dict[int, tuple[object, torch.cuda.Stream]] = {}
-
-@torch.library.custom_op("vllm::pecs_stream_overlap", mutates_args=("hidden_states",))
-def pecs_stream_overlap(hidden_states: torch.Tensor, obj_id: int) -> None:
-    # PECS dynamic prefetching uses Python-side operations that cannot be captured
-    # into a static CUDAGraph. We bypass it entirely during capture.
-    if torch.cuda.is_current_stream_capturing():
-        return
-        
-    if obj_id in _PECS_REGISTRY:
-        moe, stream = _PECS_REGISTRY[obj_id]
-        pecs_layer = getattr(moe, 'experts', None)
-        if pecs_layer is not None and hasattr(pecs_layer, 'maybe_stage_pecs_prefetch'):
-            # Fork the CUDA graph capture to the background stream!
-            stream.wait_stream(torch.cuda.current_stream())
-            
-            with torch.cuda.stream(stream):
-                pecs_layer.maybe_stage_pecs_prefetch(hidden_states)
-
-@pecs_stream_overlap.register_fake
-def _pecs_stream_overlap_fake(hidden_states: torch.Tensor, obj_id: int) -> None:
-    pass
-
-@torch.library.custom_op("vllm::pecs_wait_stream", mutates_args=("hidden_states",))
-def pecs_wait_stream(hidden_states: torch.Tensor, obj_id: int) -> None:
-    # Bypass during CUDAGraph capture since overlap was also bypassed
-    if torch.cuda.is_current_stream_capturing():
-        return
-        
-    if obj_id in _PECS_REGISTRY:
-        _, stream = _PECS_REGISTRY[obj_id]
-        torch.cuda.current_stream().wait_stream(stream)
-
-@pecs_wait_stream.register_fake
-def _pecs_wait_stream_fake(hidden_states: torch.Tensor, obj_id: int) -> None:
-    pass
+# PECS stream overlap logic has been moved into MixtralDecoderLayer.forward
+# to achieve zero-overhead execution by hiding staging latency inside the Attention window.
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, VllmConfig, get_current_vllm_config
 from vllm.distributed import (
@@ -305,11 +271,11 @@ class MixtralDecoderLayer(nn.Module):
         self.post_attention_layernorm = RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
         )
-        # Dedicated CUDA stream for overlapping PECS staging with Attention.
+        # Dedicated CUDA stream and event for overlapping PECS staging with Attention.
         # PECS fires on _pecs_stream the moment layernorm output is ready;
-        # main stream wait_stream() gates the MoE kernel so it only starts after staging is done.
-        self._pecs_stream: torch.cuda.Stream | None = torch.cuda.Stream()
-        _PECS_REGISTRY[id(self)] = (self.block_sparse_moe, self._pecs_stream)
+        # main stream wait_event() gates the MoE kernel so it only starts after staging is done.
+        self._pecs_stream = torch.cuda.Stream()
+        self._pecs_event = torch.cuda.Event()
 
     def forward(
         self,
@@ -324,25 +290,26 @@ class MixtralDecoderLayer(nn.Module):
         else:
             hidden_states, residual = self.input_layernorm(hidden_states, residual)
 
-        # Fire PECS staging on a background CUDA stream the instant layernorm
+        # 2. Fire PECS staging on a background CUDA stream the instant layernorm
         # output is ready. Attention has NO dependency on PECS output, so the
         # two run concurrently. PECS (187µs/layer) is fully hidden inside the
         # Attention window (~3-8ms/layer), giving 0ms net PECS overhead.
-        # We use a custom op to hide the Python stream/event objects from Dynamo,
-        # which would otherwise crash trying to trace them into the FX graph.
-        torch.ops.vllm.pecs_stream_overlap(hidden_states, id(self))
+        experts_layer = self.block_sparse_moe.experts
+        if hasattr(experts_layer, 'maybe_stage_pecs_prefetch'):
+            with torch.cuda.stream(self._pecs_stream):
+                experts_layer.maybe_stage_pecs_prefetch(hidden_states)
+                self._pecs_event.record(self._pecs_stream)
 
+        # 3. Run Attention on main stream - hides PECS cost entirely
         hidden_states = self.self_attn(
             positions=positions,
             hidden_states=hidden_states,
         )
 
-        # Sync: main stream waits for PECS background stream before MoE.
-        # If PECS was never launched (disabled or no predictor), the event
-        # is uninitialised and the wait is a no-op.
-        torch.ops.vllm.pecs_wait_stream(hidden_states, id(self))
+        # 4. Wait: main stream waits for PECS background stream before MoE.
+        torch.cuda.current_stream().wait_event(self._pecs_event)
 
-        # Fully Connected
+        # 5. Fully Connected
         hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
         hidden_states = self.block_sparse_moe(hidden_states)
         return hidden_states, residual

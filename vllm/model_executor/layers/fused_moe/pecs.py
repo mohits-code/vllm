@@ -562,16 +562,7 @@ class PecsLayerRuntime:
         
         if not is_compiling:
             self.stats.stage_calls += 1
-            if not _PECS_RUNTIME_ENABLED.get():
-                self.stats.stage_disabled_calls += 1
-                self._pending_proposals = None
-                self._pending_confirmed_tensor = None
-                return
 
-            # ── Diagnostic: skip everything, measure pure no-op overhead ─────────
-            if _PECS_DEBUG_NOOP_STAGE:
-                self.stats.stage_disabled_calls += 1
-                return
 
         _t0 = time.perf_counter() if (not is_compiling and _PECS_DEBUG_TIMING) else 0.0
 
