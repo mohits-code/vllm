@@ -314,7 +314,9 @@ class MixtralDecoderLayer(nn.Module):
         _PECS_REGISTRY[id(self)] = (self.block_sparse_moe, self._pecs_stream, self._pecs_event)
 
     def set_next_layer(self, next_layer: "MixtralDecoderLayer") -> None:
-        self._next_layer = next_layer
+        # Use object.__setattr__ to avoid registering next_layer as a submodule,
+        # which would cause recursive parameter registration in named_parameters().
+        object.__setattr__(self, "_next_layer", next_layer)
 
     def forward(
         self,
@@ -513,12 +515,6 @@ class MixtralModel(nn.Module):
                     ) and name_mapped not in params_dict:
                         continue
 
-                    if name_mapped not in params_dict:
-                        print(f"DEBUG: KeyError for {name_mapped}. Available keys (first 10): {list(params_dict.keys())[:10]}")
-                        # Fallback: try adding model. prefix if missing
-                        if f"model.{name_mapped}" in params_dict:
-                             name_mapped = f"model.{name_mapped}"
-                    
                     param = params_dict[name_mapped]
                     weight_loader = typing.cast(
                         Callable[..., bool], param.weight_loader
@@ -683,8 +679,4 @@ class MixtralForCausalLM(nn.Module, SupportsLoRA, SupportsPP, MixtureOfExperts):
         return loader.load_weights(weights)
 
     def get_expert_mapping(self) -> list[tuple[str, str, int, str]]:
-        mapping = self.model.get_expert_mapping()
-        return [
-            (f"model.{param_name}", weight_name, eid, sid)
-            for param_name, weight_name, eid, sid in mapping
-        ]
+        return self.model.get_expert_mapping()
