@@ -552,13 +552,10 @@ class PecsLayerRuntime:
                     device=predictor_param.device, dtype=predictor_param.dtype
                 )
                 logits = self._predictor(inputs)
-                # Apply softmax confidence threshold: only stage experts where
-                # the predicted probability exceeds the threshold. This keeps
-                # avg candidates close to top_k (ideal = 2 for Mixtral) rather
-                # than bloating to 4+ from indiscriminate topk.
-                probs = torch.softmax(logits, dim=-1)
+                # Increase prefetch factor to capture more experts (Budget = 4 * top_k)
+                prefetch_budget = 4 * self.top_k
                 top_probs, top_idx = torch.topk(
-                    probs, k=min(self.top_k, probs.shape[-1]), dim=-1
+                    probs, k=min(prefetch_budget, probs.shape[-1]), dim=-1
                 )
                 if self.proposal_confidence_threshold > 0.0:
                     # Mask low-confidence predictions with sentinel -1
@@ -574,18 +571,19 @@ class PecsLayerRuntime:
             proposal_tensor = self._rank_proposal_experts_tensor(
                 self._pending_proposals, device=dev,
             )
-            # Cap to top_k most-voted experts.
-            if proposal_tensor.numel() > self.top_k:
-                proposal_tensor = proposal_tensor[: self.top_k]
+            # Cap to budget (4 * top_k) most-voted experts.
+            if proposal_tensor.numel() > prefetch_budget:
+                proposal_tensor = proposal_tensor[: prefetch_budget]
 
         # --- merge + map: all GPU tensor ops, NO Python lists ---
         combined_tensor = self._merge_candidate_tensors(
             valid_confirmed, proposal_tensor,
         )
         
-        # Enforce strict cap to top_k to control All-to-All amplification
-        if combined_tensor.numel() > self.top_k:
-            combined_tensor = combined_tensor[:self.top_k]
+        # Enforce budget cap (4 * top_k)
+        prefetch_budget = 4 * self.top_k
+        if combined_tensor.numel() > prefetch_budget:
+            combined_tensor = combined_tensor[:prefetch_budget]
 
         combined_physical_tensor = self._map_logical_candidates_to_physical_tensor(
             combined_tensor,
